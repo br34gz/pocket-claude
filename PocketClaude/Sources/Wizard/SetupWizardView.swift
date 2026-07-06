@@ -13,7 +13,10 @@ struct SetupWizardView: View {
     @State private var showFolderPicker = false
     @State private var workspaceName: String? = WorkspaceStore.displayName
     @State private var workspaceError: String?
-    @State private var jitAvailable: Bool?
+    // JIT probe removed in v0.2: the RWX mmap check on iOS returns true
+    // due to hardened runtime allowing the allocation while blocking
+    // actual execution, so "available" was misleading. The app runs in
+    // interpreter mode unconditionally on unmodified iOS.
 
     var body: some View {
         NavigationStack {
@@ -80,36 +83,18 @@ struct SetupWizardView: View {
 
     private var performanceStep: some View {
         VStack(spacing: 16) {
-            Image(systemName: jitAvailable == true ? "hare.fill" : "tortoise.fill")
+            Image(systemName: "tortoise.fill")
                 .font(.system(size: 56))
-                .foregroundStyle(jitAvailable == true ? .green : .orange)
-            Text("Performance check")
+                .foregroundStyle(.orange)
+            Text("Slow mode")
                 .font(.title2.bold())
-            if let jitAvailable {
-                if jitAvailable {
-                    Text("JIT is available. The VM will run at full speed.")
-                        .multilineTextAlignment(.center)
-                } else {
-                    Text("JIT is not available — the VM will use interpreter mode, which is noticeably slower. To enable JIT, use StikDebug (iOS 17.4+) or SideJITServer, then re-run this check.")
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                    Link(
-                        "StikDebug setup instructions",
-                        destination: URL(string: "https://github.com/StephenDev0/StikDebug")!
-                    )
-                }
-            } else {
-                Text("Checks whether QEMU can use just-in-time compilation on this device.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-            }
-            Button {
-                jitAvailable = JITProbe.canAllocateRWX()
-            } label: {
-                Text(jitAvailable == nil ? "Run Check" : "Re-run Check")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
+            Text("On sideloaded iOS builds without a JIT entitlement, QEMU runs its TCTI interpreter — the whole VM is emulated instruction-by-instruction, so boot and Claude Code startup take a while. This is expected and matches the spec's accepted fallback.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            Text("If you have StikDebug (iOS 17.4+) or SideJITServer set up, a JIT-enabled launch will speed things up significantly — but that setup is outside this app.")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -120,7 +105,11 @@ struct SetupWizardView: View {
                 .foregroundStyle(.tint)
             Text("Sign in to Claude")
                 .font(.title2.bold())
-            Text("Sign-in happens inside the VM on first boot. The guided flow (browser handoff and code paste-back) arrives with the VM engine — for now this build ships a terminal shell with the VM integration stubbed.")
+            Text("Sign-in happens on the first boot. The VM launches claude automatically; when it prints a login URL, Pocket Claude notices and offers to open it in Safari, then hands the code back to the terminal.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            Text("If the sheet doesn't appear, scroll the terminal for the URL and paste-back manually.")
+                .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
         }

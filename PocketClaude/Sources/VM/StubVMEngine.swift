@@ -23,13 +23,11 @@ final class StubVMEngine: VMEngine {
         state = .starting
         generation += 1
         let gen = generation
-        let jit = JITProbe.canAllocateRWX()
         let bootLines = [
-            "Pocket Claude v0.1.0 — VM engine stub",
+            "Pocket Claude — VM engine stub",
             "",
-            "[stub] qemu-system-aarch64 ........ not integrated (M0 pending)",
-            "[stub] alpine-claude.qcow2 ........ built in CI, not booted here",
-            "[stub] JIT probe .................. \(jit ? "available" : "unavailable (interpreter mode when QEMU lands)")",
+            "[stub] qemu-system-aarch64 ........ framework not present in bundle",
+            "[stub] alpine-claude.qcow2 ........ not embedded",
             "[stub] workspace .................. \(WorkspaceStore.displayName ?? "not configured")",
             "",
             "This build ships the app shell only. The QEMU integration path is",
@@ -46,7 +44,7 @@ final class StubVMEngine: VMEngine {
         }
         queue.asyncAfter(deadline: .now() + delay + 0.1) { [weak self] in
             guard let self, self.generation == gen else { return }
-            self.state = .running(jit: jit)
+            self.state = .running(jit: false)
             self.emit(Self.prompt)
         }
     }
@@ -102,10 +100,9 @@ final class StubVMEngine: VMEngine {
 
             """)
         case "status":
-            let jit = JITProbe.canAllocateRWX()
             emit("""
             engine    : stub (no VM)\r
-            jit       : \(jit ? "available" : "unavailable")\r
+            reason    : qemu-aarch64-softmmu.framework not present in bundle\r
             workspace : \(WorkspaceStore.displayName ?? "not configured")\r
 
             """)

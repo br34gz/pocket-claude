@@ -21,7 +21,7 @@ settings:
   base:
     SWIFT_VERSION: "5.10"
     DEVELOPMENT_TEAM: ""
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: NO
     CODE_SIGN_IDENTITY: ""
@@ -72,3 +72,9 @@ targets:
         ENABLE_PREVIEWS: YES
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Bridging header exposes QEMUBootstrap.h (C) to Swift.
+        SWIFT_OBJC_BRIDGING_HEADER: PocketClaude/Sources/VM/PocketClaude-Bridging-Header.h
+        # Frameworks/ is populated post-archive with UTM-SE's qemu +
+        # dependency frameworks. iOS apps get @executable_path/Frameworks
+        # as an rpath by default; explicit here for clarity.
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"
