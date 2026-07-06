@@ -85,6 +85,31 @@ jobs:
           du -sh build/staged-frameworks
           ls build/staged-frameworks | wc -l
 
+      - name: Extract qemu firmware (efi-virtio.rom + friends)
+        # v0.3.1 died with "failed to find romfile efi-virtio.rom" - the
+        # qemu framework doesn't ship its pc-bios directory. UTM has one
+        # at Payload/UTM SE.app/qemu/ (315 MB total). We skip the massive
+        # edk2-*.fd UEFI images (~250 MB, only needed for firmware-boot
+        # setups, not our direct -kernel path) and take the ~12 MB
+        # remainder as belt-and-braces: efi-virtio.rom + every other
+        # small ROM/BIOS UTM ships.
+        run: |
+          mkdir -p build/staged-firmware
+          SRC="build/utm/Payload/UTM SE.app/qemu"
+          if [[ ! -d "$SRC" ]]; then
+            echo "::error::UTM firmware dir not found at $SRC"
+            exit 1
+          fi
+          # Copy everything except UEFI edk2 blobs
+          rsync -a --exclude 'edk2-*.fd' "$SRC/" build/staged-firmware/
+          # Verify the specific ROM we know we need
+          if [[ ! -f build/staged-firmware/efi-virtio.rom ]]; then
+            echo "::error::efi-virtio.rom missing after firmware extraction"
+            exit 1
+          fi
+          du -sh build/staged-firmware
+          ls build/staged-firmware | wc -l
+
       - name: Fetch guest image
         id: guest
         env:
@@ -129,6 +154,15 @@ jobs:
 
           mkdir -p "$APP/GuestImage"
           cp build/guest/* "$APP/GuestImage/"
+
+          # v0.3.2: qemu firmware search path (-L in argv points here)
+          mkdir -p "$APP/qemu-firmware"
+          cp -R build/staged-firmware/* "$APP/qemu-firmware/"
+          echo "=== firmware count in bundle ==="
+          ls "$APP/qemu-firmware" | wc -l
+          [[ -f "$APP/qemu-firmware/efi-virtio.rom" ]] || {
+            echo "::error::efi-virtio.rom missing from final bundle"; exit 1;
+          }
 
           # Adhoc-sign every framework mach-O + the app binary. Same
           # treatment that v0.2.4-v0.2.7 shipped safely.
@@ -178,7 +212,27 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketClaude v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            v0.3.1 - fix qemu_init exit(2) on socket bind failure.
+            v0.3.2 - fix missing efi-virtio.rom + switch to MMIO virtio.
+
+            v0.3.1's qemu stderr revealed the definitive error:
+              "qemu-aarch64-softmmu: failed to find romfile efi-virtio.rom"
+
+            Two fixes shipped together:
+            1. Bundle UTM's qemu firmware directory (12 MB, sans
+               edk2-*.fd UEFI blobs we don't need for direct kernel
+               boot) at Payload/PocketClaude.app/qemu-firmware/, and
+               add `-L <that-path>` early in the qemu argv so it can
+               find the ROMs.
+            2. Switch from virtio-net-pci to virtio-net-device (MMIO)
+               and virtio-serial-device (MMIO) - the MMIO transports on
+               the aarch64 virt machine don't touch any PCI expansion
+               ROM, sidestepping the class of failure entirely.
+
+            Belt-and-braces: either fix alone should be sufficient;
+            shipping both means we don't care which one takes.
+
+            (Everything from v0.3.1 still applies: short socket paths,
+             qemu stderr capture, delayed connect, full argv logging.)
 
             v0.3.0's boot log terminated at qemu_init_call -> qemu_exit_hook,
             confirming qemu_init exit()ed inside argv parsing. Culprit:

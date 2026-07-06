@@ -110,8 +110,20 @@ final class QEMUVMEngine: VMEngine {
                 // -display none suppresses SDL/Cocoa init. -nodefaults +
                 // -no-user-config for a stripped baseline; every device
                 // is added explicitly.
+                // -L <dir> tells qemu where to look for firmware ROMs.
+                // v0.3.1's qemu stderr showed "failed to find romfile
+                // efi-virtio.rom" - the QEMU framework doesn't include
+                // its pc-bios directory. CI now copies UTM's qemu/
+                // (minus the huge edk2-*.fd UEFI files we don't need
+                // for direct-kernel boot) into
+                // Payload/PocketClaude.app/qemu-firmware/.
+                let romsDir = Bundle.main.bundleURL
+                    .appendingPathComponent("qemu-firmware").path
+                logPhase("qemu_roms_dir=\(romsDir)")
+
                 var args: [String] = [
                     "qemu-aarch64-softmmu",
+                    "-L", romsDir,
                     "-M", "virt,highmem=off",
                     "-cpu", "cortex-a72",
                     "-smp", "\(self.vcpus)",
@@ -124,10 +136,19 @@ final class QEMUVMEngine: VMEngine {
                     "-initrd", assets.initramfs.path,
                     "-append", "console=ttyAMA0 root=/dev/vda rootfstype=ext4 rw quiet",
                     "-drive", "file=\(assets.disk.path),if=virtio,format=qcow2,cache=writeback,discard=unmap",
-                    "-nic", "user,model=virtio-net-pci",
+                    // v0.3.2: switch from virtio-net-pci to virtio-net-device
+                    // (MMIO). The MMIO transport on -M virt doesn't need a
+                    // PCI expansion ROM, sidestepping efi-virtio.rom
+                    // entirely. Belt-and-braces on top of the -L fix.
+                    "-netdev", "user,id=net0",
+                    "-device", "virtio-net-device,netdev=net0",
                     "-chardev", "socket,id=console0,path=\(consolePath),server=on,wait=off",
                     "-serial", "chardev:console0",
-                    "-device", "virtio-serial-pci,id=vser0",
+                    // Control channel: use virtio-serial-device (MMIO) too
+                    // for consistency; virtio-serial-pci was fine but
+                    // -device virtio-serial-device is the equivalent
+                    // MMIO transport and doesn't touch any PCI ROM.
+                    "-device", "virtio-serial-device,id=vser0",
                     "-chardev", "socket,id=ctrl0,path=\(controlPath),server=on,wait=off",
                     "-device", "virtserialport,chardev=ctrl0,name=pocket.control",
                     "-qmp", "unix:\(qmpPath),server=on,wait=off",
