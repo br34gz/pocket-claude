@@ -3,7 +3,10 @@ import SwiftUI
 
 /// Shared, observable state that both the wizard and main view read/write:
 /// which VM engine to hand the terminal, workspace URL, auth handoff URL.
-@MainActor
+/// Not @MainActor because SwiftUI's @StateObject property-initializer
+/// runs during view init and Swift-6 strict concurrency will crash at
+/// launch if the environment is annotated. All publishes happen through
+/// DispatchQueue.main hops instead.
 final class PocketClaudeEnvironment: ObservableObject {
     @Published private(set) var engine: (any VMEngine)?
     @Published var pendingAuthURL: URL?

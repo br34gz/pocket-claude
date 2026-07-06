@@ -139,6 +139,32 @@ jobs:
             cp build/guest/* "$APP/GuestImage/"
           fi
 
+          # Aggressive re-sign: UTM ships each framework mach-O with an
+          # LC_CODE_SIGNATURE blob from their own build. Sideload
+          # re-signers (SideStore, LiveContainer, TrollStore) may fail
+          # or be flaky when replacing an existing signature vs signing
+          # a clean binary. Strip and re-adhoc-sign every mach-O so the
+          # sideloader has a uniform baseline. See v0.2.0 launch crash:
+          # process died with SIGHUP within milliseconds of exec, most
+          # likely amfid rejecting inconsistent signature states.
+          echo "=== Framework signature normalization ==="
+          for fw in "$APP/Frameworks"/*.framework; do
+            name=$(basename "$fw" .framework)
+            bin="$fw/$name"
+            if [[ -f "$bin" ]] && file "$bin" | grep -q "Mach-O"; then
+              codesign --remove-signature "$bin" 2>/dev/null || true
+              codesign --force --sign - --timestamp=none "$bin"
+              # sanity: dump BUILD_VERSION so we can spot min-OS mismatches
+              minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')
+              echo "  $name  minos=$minos  signed=adhoc"
+            fi
+          done
+          # And re-sign the main app binary too so PocketClaude itself
+          # ships with a clean adhoc signature (was unsigned before).
+          codesign --force --sign - --timestamp=none "$APP/PocketClaude"
+          echo "=== Verification pass ==="
+          codesign -dv "$APP" 2>&1 | head -5 || true
+
           # GPL-2 notice for the QEMU frameworks bundled with the IPA.
           cat > "$APP/QEMU-NOTICE.txt" <<'NOTICE'
           This app bundle includes qemu-system-aarch64 and support libraries
