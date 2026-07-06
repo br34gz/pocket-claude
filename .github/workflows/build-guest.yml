@@ -18,20 +18,22 @@ permissions:
 jobs:
   build:
     name: Build alpine-claude.qcow2
-    runs-on: ubuntu-latest
+    # ubuntu-24.04-arm is GitHub's free arm64 runner for public repos.
+    # v0.6.0's earlier attempts on ubuntu-latest x86_64 + qemu-user
+    # binfmt hit the 45-min workflow timeout on the Debian package
+    # install alone - every dpkg call was emulated. Native arm64
+    # brings the build back to ~2-3 min.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU binfmt (arm64 containers)
-        uses: docker/setup-qemu-action@v3
-
-      - name: Build Debian aarch64 rootfs
+      - name: Build Debian aarch64 rootfs (native arm64)
         run: |
           mkdir -p out
-          docker run --rm --platform linux/arm64 \
+          docker run --rm \
             -v "$PWD/guest:/guest:ro" \
             -v "$PWD/out:/out" \
             debian:12-slim bash /guest/build-rootfs.sh
