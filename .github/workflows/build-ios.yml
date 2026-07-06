@@ -122,6 +122,10 @@ jobs:
             install_name_tool -id "@rpath/${new}.framework/${new}" "$dest/${new}"
             # Info.plist's CFBundleExecutable must match the binary name.
             plutil -replace CFBundleExecutable -string "${new}" "$dest/Info.plist"
+            # Distinct CFBundleIdentifier so re-signers don't flag two
+            # frameworks with the same identifier (which the raw upstream
+            # bundles share as com.utmapp.qemu-aarch64-softmmu).
+            plutil -replace CFBundleIdentifier -string "com.br34gz.pocketclaude.${new}" "$dest/Info.plist"
             # Sanity check.
             file "$dest/${new}" | head -1
           }
