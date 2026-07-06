@@ -50,10 +50,10 @@ struct PocketClaudeApp: App {
         // build. Read by us in the boot log to cross-reference which
         // build the user is running without having to check the version
         // string. See release-notes body for each build's framework list.
-        logBoot("framework_layer_glib")
-        logBoot("framework_layer_pixman_crypto")
-        logBoot("framework_layer_io_display")
-        logBoot("framework_layer_qemu")
+        logBoot("framework_layer_utm_jit")
+        // JIT probe - see BootLog.c pocket_probe_jit for return codes.
+        let jit = pocket_probe_jit()
+        logBoot("jit_probe_result=\(jit)")
         logBoot("app_init")
     }
 

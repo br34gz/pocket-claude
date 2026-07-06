@@ -1,13 +1,22 @@
 #include "BootLog.h"
 
 #include <mach/mach.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+// MAP_JIT lives in Darwin's <sys/mman.h> on modern SDKs but on iOS
+// the constant is 0x800. Guard the include so an older SDK still
+// compiles.
+#ifndef MAP_JIT
+#define MAP_JIT 0x800
+#endif
 
 static void write_line(const char *phase) {
     // On iOS, $HOME points at the app sandbox root; Documents/ is a
@@ -31,6 +40,34 @@ static void write_line(const char *phase) {
 
 void pocket_boot_log(const char *phase) {
     write_line(phase);
+}
+
+// JIT probe - see header for return values. We deliberately do NOT
+// try to execute code we wrote; on a device without the runtime
+// exec grant that would SIGKILL us. The mmap-and-toggle result is a
+// sufficient proxy: if MAP_JIT succeeds and the W/X toggle doesn't
+// fault, the app has the JIT entitlement and QEMU's TCG will emit
+// native code freely. The user's actual boot time will tell us
+// whether execute-grant is in place too (from StikDebug etc).
+int pocket_probe_jit(void) {
+    size_t page = 16384;  // iOS arm64 uses 16 KB pages
+    void *p = mmap(NULL, page,
+                   PROT_READ | PROT_WRITE | PROT_EXEC,
+                   MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
+    if (p == MAP_FAILED) {
+        return 0;  // jit_unavailable
+    }
+    // Toggle to writable (W enabled, X disabled), write a nop, toggle
+    // back to executable. If toggling itself blows up we're in the
+    // "allowed but broken" middle state.
+    pthread_jit_write_protect_np(0);
+    // NOP + RET so the page is well-formed even if the OS enforces
+    // strict W^X.
+    ((uint32_t *)p)[0] = 0xD503201F;  // NOP
+    ((uint32_t *)p)[1] = 0xD65F03C0;  // RET
+    pthread_jit_write_protect_np(1);
+    munmap(p, page);
+    return 1;  // jit_allowed
 }
 
 void pocket_boot_log_rss(void) {

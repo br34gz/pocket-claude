@@ -46,37 +46,45 @@ jobs:
           xcodegen generate
           ls -la PocketClaude.xcodeproj/
 
-      # v0.3.0 - full build. All 22 UTM frameworks + the guest image.
-      # Bisection confirmed the full framework payload is amfid-safe
-      # (v0.2.4->v0.2.7 shipped cumulatively without launch crashes).
-      # The v0.2.0 launch failure is now attributed to qemu_init exit(2)
-      # on argv errors; v0.3.0 guards that with preflight + atexit hook.
+      # v0.4.0 - switch from UTM-SE.ipa (TCTI interpreter, no JIT) to
+      # UTM.ipa (JIT-capable). The QEMU framework in UTM.ipa is compiled
+      # with mmap(MAP_JIT) + pthread_jit_write_protect_np() so it can
+      # emit native code when the process has the dynamic-codesigning
+      # entitlement + a runtime exec grant (StikDebug / SideJITServer).
+      #
+      # Dependency delta vs UTM-SE (22 -> 25 frameworks):
+      #   + Hypervisor.framework   (87 KB stub UTM ships)
+      #   + usb-1.0.0              (172 KB)
+      #   + usbredirparser.1       (56 KB)
+      # qemu-aarch64-softmmu itself shrinks 191 MB (SE interpreter) to
+      # 30 MB (JIT). Total framework payload drops 213 MB -> 51 MB.
 
-      - name: Fetch UTM-SE (source of the iOS QEMU frameworks)
+      - name: Fetch UTM.ipa (JIT-capable QEMU frameworks)
         env:
-          UTM_SE_URL: https://github.com/utmapp/UTM/releases/download/v5.0.3/UTM-SE.ipa
+          UTM_URL: https://github.com/utmapp/UTM/releases/download/v5.0.3/UTM.ipa
         run: |
           mkdir -p build/utm
-          curl -sSL "$UTM_SE_URL" -o build/utm/UTM-SE.ipa
-          ls -lh build/utm/UTM-SE.ipa
+          curl -sSL "$UTM_URL" -o build/utm/UTM.ipa
+          ls -lh build/utm/UTM.ipa
           cd build/utm
-          unzip -q UTM-SE.ipa
+          unzip -q UTM.ipa
 
-      - name: Extract full framework set (all 22)
+      - name: Extract full framework set (25 total)
         run: |
           mkdir -p build/staged-frameworks
-          SRC="build/utm/Payload/UTM SE.app/Frameworks"
+          SRC="build/utm/Payload/UTM.app/Frameworks"
           for fw in \
               glib-2.0.0 gio-2.0.0 gobject-2.0.0 gmodule-2.0.0 \
               iconv.2 intl.8 ffi.8 \
               pixman-1.0 jpeg.62 epoxy.0 crypto.1.1 ssl.1.1 \
               slirp.0 zstd.1 spice-server.1 virglrenderer.1 vulkan.1 \
               gstreamer-1.0.0 gstbase-1.0.0 gstapp-1.0.0 opus.0 \
+              Hypervisor usb-1.0.0 usbredirparser.1 \
               qemu-aarch64-softmmu; do
             if [[ -d "$SRC/$fw.framework" ]]; then
               cp -R "$SRC/$fw.framework" build/staged-frameworks/
             else
-              echo "::error::missing framework $fw in UTM-SE.ipa"
+              echo "::error::missing framework $fw in UTM.ipa"
               exit 1
             fi
           done
@@ -85,24 +93,17 @@ jobs:
           du -sh build/staged-frameworks
           ls build/staged-frameworks | wc -l
 
-      - name: Extract qemu firmware (efi-virtio.rom + friends)
-        # v0.3.1 died with "failed to find romfile efi-virtio.rom" - the
-        # qemu framework doesn't ship its pc-bios directory. UTM has one
-        # at Payload/UTM SE.app/qemu/ (315 MB total). We skip the massive
-        # edk2-*.fd UEFI images (~250 MB, only needed for firmware-boot
-        # setups, not our direct -kernel path) and take the ~12 MB
-        # remainder as belt-and-braces: efi-virtio.rom + every other
-        # small ROM/BIOS UTM ships.
+      - name: Extract qemu firmware
+        # UTM.ipa firmware sits at Payload/UTM.app/qemu/ - same structure
+        # and ROM set as UTM-SE.
         run: |
           mkdir -p build/staged-firmware
-          SRC="build/utm/Payload/UTM SE.app/qemu"
+          SRC="build/utm/Payload/UTM.app/qemu"
           if [[ ! -d "$SRC" ]]; then
             echo "::error::UTM firmware dir not found at $SRC"
             exit 1
           fi
-          # Copy everything except UEFI edk2 blobs
           rsync -a --exclude 'edk2-*.fd' "$SRC/" build/staged-firmware/
-          # Verify the specific ROM we know we need
           if [[ ! -f build/staged-firmware/efi-virtio.rom ]]; then
             echo "::error::efi-virtio.rom missing after firmware extraction"
             exit 1
@@ -175,9 +176,25 @@ jobs:
               codesign --force --sign - --timestamp=none "$bin"
             fi
           done
-          codesign --force --sign - --timestamp=none "$APP/PocketClaude"
+          # v0.4.0: apply the JIT entitlements when we ad-hoc sign the
+          # main binary. The signer (StikDebug / SideStore) will re-sign
+          # with its own key at install, but the entitlement plist gets
+          # carried through, giving the paired signer visibility into
+          # what to grant. XcodeGen generates the .entitlements file at
+          # `entitlements.path` from the properties block in project.yml.
+          ENTS=PocketClaude/Resources/PocketClaude.entitlements
+          if [[ -f "$ENTS" ]]; then
+            echo "=== Entitlements being applied ==="
+            plutil -p "$ENTS" | head -20
+            codesign --force --sign - --timestamp=none \
+              --entitlements "$ENTS" "$APP/PocketClaude"
+          else
+            echo "::warning::entitlements file $ENTS missing; signing without"
+            codesign --force --sign - --timestamp=none "$APP/PocketClaude"
+          fi
           echo "=== Verification ==="
           codesign -dv "$APP" 2>&1 | head -5 || true
+          codesign -d --entitlements - "$APP/PocketClaude" 2>&1 | head -30 || true
 
           cat > "$APP/QEMU-NOTICE.txt" <<'NOTICE'
           This app bundle includes qemu-system-aarch64 and support libraries
@@ -212,7 +229,45 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketClaude v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            v0.3.3 - jetsam diagnostics + guest RAM control.
+            v0.4.0 - JIT-capable QEMU (UTM.ipa) + JIT entitlements.
+
+            Strategic pivot. Previous builds (v0.3.x) shipped QEMU from
+            UTM-SE.ipa - a TCTI-interpreter build with no MAP_JIT, so it
+            couldn't emit native code even when the runtime granted the
+            exec permission. This build switches the source to UTM.ipa,
+            whose QEMU framework is compiled with mmap(MAP_JIT) +
+            pthread_jit_write_protect_np toggling.
+
+            Framework delta:
+              qemu-aarch64-softmmu  191 MB (SE, TCTI) -> 30 MB (JIT)
+              + Hypervisor.framework   (UTM's stub for iOS)
+              + usb-1.0.0
+              + usbredirparser.1
+            Total framework payload: 213 MB -> 51 MB.
+
+            Entitlements now applied at ad-hoc codesign time:
+              dynamic-codesigning: true
+              com.apple.security.cs.allow-jit: true
+              get-task-allow: true
+              (plus the existing memory-limit + extended-virtual entitlements)
+            The sideloader will re-sign, but the entitlement plist is
+            carried through so StikDebug's paired signer sees what to
+            grant.
+
+            Also:
+            - Default guest RAM 768 -> 1024 MB (v0.3.3 was defensive
+              against jetsam; user confirmed increased-memory-limit is
+              in play so we can be generous).
+            - JIT probe (mmap MAP_JIT + W/X toggle) in BootLog.c; logs
+              jit_probe_result=0/1 at app_init and drives the wizard
+              performance step ("JIT allowed" vs "Interpreter mode").
+            - Wizard performance step now shows the real probe result
+              instead of a static "slow mode" note.
+            - MainView "session ended" card gets a "QEMU holds process
+              globals; if Retry fails, close and reopen" caveat.
+
+            Expected under StikDebug on a JIT-capable device:
+              15-30s boot to Alpine login vs multi-minute interpreter.
 
             v0.3.2 boot log showed QEMU launched, main loop entered,
             sockets connected, Alpine kernel started printing, then

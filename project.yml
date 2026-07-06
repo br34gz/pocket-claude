@@ -21,7 +21,7 @@ settings:
   base:
     SWIFT_VERSION: "5.10"
     DEVELOPMENT_TEAM: ""
-    MARKETING_VERSION: "0.3.3"
+    MARKETING_VERSION: "0.4.0"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: NO
     CODE_SIGN_IDENTITY: ""
@@ -46,8 +46,20 @@ targets:
     entitlements:
       path: PocketClaude/Resources/PocketClaude.entitlements
       properties:
+        # Memory ceiling entitlements matching UTM's own claim set. The
+        # user's LiveContainer carries increased-memory-limit and it
+        # extends to the sideloaded app.
         com.apple.developer.kernel.increased-memory-limit: true
         com.apple.developer.kernel.extended-virtual-addressing: true
+        # JIT: dynamic-codesigning is the iOS/macOS entitlement UTM ships
+        # to allow MAP_JIT allocations and W/X page toggling via
+        # pthread_jit_write_protect_np. Without this the QEMU-JIT build
+        # from UTM.ipa can't emit native code and falls back to TCG.
+        # allow-jit is macOS Big Sur+ hardened-runtime; harmless on iOS
+        # and matches what StikDebug's paired signer looks for.
+        dynamic-codesigning: true
+        com.apple.security.cs.allow-jit: true
+        get-task-allow: true
     info:
       path: PocketClaude/Resources/Info.plist
       properties:
@@ -79,7 +91,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Bridging header exposes QEMUBootstrap.h (C) to Swift.
         SWIFT_OBJC_BRIDGING_HEADER: PocketClaude/Sources/VM/PocketClaude-Bridging-Header.h
-        # Frameworks/ is populated post-archive with UTM-SE's qemu +
-        # dependency frameworks. iOS apps get @executable_path/Frameworks
-        # as an rpath by default; explicit here for clarity.
+        # Frameworks/ is populated post-archive with UTM's qemu + deps.
+        # iOS apps get @executable_path/Frameworks as an rpath by
+        # default; explicit here for clarity.
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"

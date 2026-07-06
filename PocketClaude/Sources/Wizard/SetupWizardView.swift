@@ -82,19 +82,30 @@ struct SetupWizardView: View {
     }
 
     private var performanceStep: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "tortoise.fill")
+        let jit = pocket_probe_jit()
+        return VStack(spacing: 16) {
+            Image(systemName: jit == 1 ? "hare.fill" : "tortoise.fill")
                 .font(.system(size: 56))
-                .foregroundStyle(.orange)
-            Text("Slow mode")
+                .foregroundStyle(jit == 1 ? .green : .orange)
+            Text(jit == 1 ? "JIT allowed" : "Interpreter mode")
                 .font(.title2.bold())
-            Text("On sideloaded iOS builds without a JIT entitlement, QEMU runs its TCTI interpreter — the whole VM is emulated instruction-by-instruction, so boot and Claude Code startup take a while. This is expected and matches the spec's accepted fallback.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-            Text("If you have StikDebug (iOS 17.4+) or SideJITServer set up, a JIT-enabled launch will speed things up significantly — but that setup is outside this app.")
-                .font(.footnote)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+            if jit == 1 {
+                Text("MAP_JIT allocation succeeded — this app has the JIT entitlement. QEMU can emit native ARM64 code for the guest, so boot and Claude Code should run at near-native speed.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Text("If the launcher (StikDebug etc.) also grants the runtime exec permission, boot to Alpine login should be ~15-30 seconds.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("MAP_JIT allocation failed. QEMU falls back to its TCTI interpreter — functional but noticeably slower.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Text("To enable JIT: launch through StikDebug (iOS 17.4+) or SideJITServer. These grant the runtime exec permission the JIT entitlement alone doesn't cover.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

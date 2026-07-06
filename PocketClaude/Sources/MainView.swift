@@ -126,6 +126,11 @@ struct MainView: View {
                 .buttonStyle(.bordered)
                 .tint(.white)
             }
+            Text("Note: QEMU holds process-global state, so Retry only works cleanly once. If it fails again, close and reopen the app (via the launcher that gave it JIT, if applicable).")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
         }
         .padding(24)
         .background(.black.opacity(0.9))

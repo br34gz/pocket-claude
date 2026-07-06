@@ -67,7 +67,10 @@ enum GuestRAM {
     static let minMB = 384
     static let maxMB = 2048
     static let stepMB = 64
-    static let defaultMB = 768
+    // v0.4.0: bumped back to 1024 now that we know the user's LiveContainer
+    // carries increased-memory-limit and RSS was nowhere near the ceiling.
+    // Also matches spec section 3's Default row.
+    static let defaultMB = 1024
 
     /// Read the persisted value or fall back to the default.
     static func current() -> Int {

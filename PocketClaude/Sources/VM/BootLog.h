@@ -21,6 +21,16 @@ void pocket_boot_log(const char *phase);
 // jetsam-kill forensics from the atexit hook.
 void pocket_boot_log_rss(void);
 
+// JIT capability probe. Attempts an mmap with PROT_EXEC|MAP_JIT and,
+// on success, exercises pthread_jit_write_protect_np toggling. Does
+// NOT execute synthesized code, because on iOS with strict signature
+// enforcement an unauthorized exec faults SIGKILL (unrecoverable).
+// Returns:
+//   0  jit_unavailable     - MAP_JIT mmap failed (typical sideload)
+//   1  jit_allowed         - mmap succeeded, W/X toggle succeeded
+//   2  jit_toggle_failed   - mmap succeeded, W/X toggle set errno
+int pocket_probe_jit(void);
+
 #ifdef __cplusplus
 }
 #endif
