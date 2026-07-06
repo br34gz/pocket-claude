@@ -270,7 +270,29 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketClaude v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            v0.5.0 - guest image v2 (claude-code startup fix).
+            v0.5.1 - guest image v3, npm claude-code + system-mode CI smoke test.
+
+            v0.5.0 shipped claude-code 2.1.108 from the apk repo. That
+            version's Bun bunfs failed differently on device (Module
+            not found /$bunfs/root/src/entrypoints/cli.js) even though
+            it passed our chroot-under-qemu-user smoke test - a
+            different kernel path from full system-mode.
+
+            v0.5.1:
+            - Guest image installs claude-code via npm on top of Node.js
+              (npm install -g @anthropic-ai/claude-code). Skips Bun's
+              bunfs entirely.
+            - claude_variant now reports npm:@anthropic-ai/claude-code@X.Y.Z.
+            - Guest .profile catches non-zero exit from claude and prints
+              a friendly diagnostic before dropping to shell.
+            - Guest CI now boots the packed qcow2 under real
+              system-mode qemu-system-aarch64 on ubuntu-latest, watches
+              the console for either PASS ("claude --version: X.Y.Z") or
+              FAIL (Module not found / TypeError / kernel panic). If the
+              boot smoke test fails, the guest release doesn't publish.
+
+            iOS build is unchanged from v0.5.0 - all v0.4.1 dual-engine
+            work, entitlements, socket paths, memory guards remain.
 
             v0.4.1 booted Alpine end-to-end but claude 2.1.193
             deterministically crashed at interactive startup with

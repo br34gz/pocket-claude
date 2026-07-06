@@ -59,6 +59,21 @@ jobs:
           echo "variant=$(cat out/claude-variant.txt 2>/dev/null || echo unknown)" >> "$GITHUB_OUTPUT"
           echo "version=$(cat out/claude-version.txt 2>/dev/null || echo unknown)" >> "$GITHUB_OUTPUT"
 
+      - name: System-mode QEMU boot smoke test
+        # Boots the packed qcow2 exactly the way the iOS app does
+        # (direct kernel, virtio-net-device MMIO, virtio-serial control
+        # channel, unix-socket console + control chardevs). The .profile
+        # runs `claude --version` at auto-login; the driver watches the
+        # console for either the version line (PASS) or one of the
+        # known Bun-crash markers (FAIL). This is the definitive test -
+        # if it works here, it works on device, because the interpreter
+        # backend, kernel, initramfs, rootfs, and userspace are the
+        # same. Only speed differs.
+        run: |
+          sudo apt-get install -y -q qemu-system-arm python3
+          python3 guest/smoke-test-qcow2.py \
+            alpine-claude.qcow2 out/vmlinuz-virt out/initramfs-virt
+
       - name: Publish guest-latest release
         uses: softprops/action-gh-release@v2
         with:
