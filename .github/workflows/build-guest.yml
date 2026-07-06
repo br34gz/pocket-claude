@@ -35,6 +35,9 @@ jobs:
             -v "$PWD/guest:/guest:ro" \
             -v "$PWD/out:/out" \
             alpine:3.21 sh /guest/build-rootfs.sh
+          # Container writes as root; initramfs is 0600. Make outputs
+          # readable for the release upload step.
+          sudo chmod -R a+r out
 
       - name: Create qcow2 disk image
         run: |
