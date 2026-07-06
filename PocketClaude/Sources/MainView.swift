@@ -2,14 +2,19 @@ import SwiftUI
 import SafariServices
 
 struct MainView: View {
-    @EnvironmentObject var env: PocketClaudeEnvironment
+    /// v0.2.3: switched from @EnvironmentObject to @ObservedObject on the
+    /// shared singleton. `@EnvironmentObject` `fatalError`s if the object
+    /// isn't found in the environment during a view transition; that was
+    /// the suspected cause of the v0.2.2 crash-on-Finish.
+    @ObservedObject var env = PocketClaudeEnvironment.shared
     @AppStorage("setupComplete") private var setupComplete = false
     @State private var showAuthSheet = false
     @State private var authSheetURL: URL?
     @State private var codeToPaste: String = ""
 
     var body: some View {
-        NavigationStack {
+        logBoot("mainview_body")
+        return NavigationStack {
             VStack(spacing: 0) {
                 terminal
                 KeyRowView { bytes in
@@ -21,6 +26,7 @@ struct MainView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
             .onAppear {
+                logBoot("mainview_appear")
                 if env.engine == nil {
                     env.startEngine()
                 }

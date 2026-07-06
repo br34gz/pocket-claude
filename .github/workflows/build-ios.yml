@@ -105,12 +105,19 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketClaude v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            DIAGNOSTIC BUILD — no QEMU frameworks embedded, no guest image.
+            DIAGNOSTIC BUILD — no QEMU frameworks, no guest image.
 
-            Purpose: v0.2.0 and v0.2.1 both crashed at launch on sideloaded
-            installs (SIGHUP within milliseconds of exec). This build strips
-            everything QEMU-related to isolate whether the crash is in the
-            framework payload or in our Swift/project setup.
+            v0.2.2 confirmed the sideload launch crash is in the framework
+            payload (not our Swift). v0.2.2 also revealed a separate Swift
+            crash: tapping "Finish" on the wizard's sign-in step. v0.2.3
+            fixes that by switching PocketClaudeEnvironment from
+            @EnvironmentObject to a shared singleton (the former can
+            fatalError during view swap) and extends the boot log so we
+            can see exactly how far the transition to MainView gets.
+
+            Expected boot-log sequence after tapping Finish:
+              wizard_finish_tapped, wizard_finish_done, mainview_body,
+              mainview_appear, env_start_engine, stub_engine_start
 
             IMPORTANT — DELETE THE PREVIOUS INSTALL FIRST:
             iOS caches framework signatures per bundle-ID. Long-press the

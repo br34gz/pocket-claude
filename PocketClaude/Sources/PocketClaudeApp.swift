@@ -1,46 +1,56 @@
 import SwiftUI
 import UIKit
 
-/// v0.2.2 is the diagnostic build: no UTM/QEMU frameworks embedded, no
-/// guest image. Boot log lands at Documents/pocket-claude-boot.log,
-/// visible in the Files app under On My iPhone → PocketClaude.
+/// v0.2.3: diagnostic-plus-fix build. Still no UTM/QEMU frameworks.
 ///
-///  - dylib_ctor    → dyld loaded our binary (C constructor ran)
-///  - app_init      → PocketClaudeApp.init() ran (Swift+SwiftUI up)
-///  - delegate_launch → UIApplicationDelegate hook fired
-///  - root_appear   → first SwiftUI view mounted
+/// v0.2.2 confirmed the app launches (all four expected phases hit the
+/// boot log). It also revealed a separate Swift-side crash: tapping
+/// "Finish" on the wizard's sign-in step crashed. Suspected cause:
+/// `@EnvironmentObject var env: PocketClaudeEnvironment` in MainView
+/// `fatalError`s if the environment object isn't found during the
+/// RootView -> MainView view swap.
 ///
-/// If the log file doesn't even exist after the user reinstalls, the
-/// crash is pre-main (dyld / amfid). If it stops after `dylib_ctor`,
-/// Swift itself is dying at init. Etc.
+/// Fix: PocketClaudeEnvironment is now a plain shared singleton, no
+/// SwiftUI environment plumbing involved. Every view that needs it just
+/// calls `PocketClaudeEnvironment.shared`.
+///
+/// Boot log (Documents/pocket-claude-boot.log) extended with:
+///   dylib_ctor            — C constructor ran
+///   app_init              — Swift App.init ran
+///   delegate_launch       — UIApplicationDelegate fired
+///   root_appear           — first WindowGroup scene rendered
+///   wizard_finish_tapped  — top of the Finish button handler
+///   wizard_finish_done    — after setupComplete = true
+///   mainview_body         — MainView.body computed
+///   mainview_appear       — MainView.onAppear ran
+///   env_start_engine      — env.startEngine() called
+///   stub_engine_start     — StubVMEngine.start entry
 
-private func logBoot(_ phase: String) {
+@inline(__always)
+func logBoot(_ phase: String) {
     phase.withCString { pocket_boot_log($0) }
 }
 
 @main
 struct PocketClaudeApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var env: PocketClaudeEnvironment
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         logBoot("app_init")
-        _env = StateObject(wrappedValue: PocketClaudeEnvironment())
     }
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environmentObject(env)
                 .onAppear { logBoot("root_appear") }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .background:
-                (env.engine as? QEMUVMEngine)?.pause()
+                (PocketClaudeEnvironment.shared.engine as? QEMUVMEngine)?.pause()
             case .active:
-                (env.engine as? QEMUVMEngine)?.resume()
+                (PocketClaudeEnvironment.shared.engine as? QEMUVMEngine)?.resume()
             default: break
             }
         }

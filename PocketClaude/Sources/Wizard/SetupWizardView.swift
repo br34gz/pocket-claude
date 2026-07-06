@@ -126,8 +126,12 @@ struct SetupWizardView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(step == 0 && workspaceName == nil)
             } else {
-                Button("Finish") { setupComplete = true }
-                    .buttonStyle(.borderedProminent)
+                Button("Finish") {
+                    logBoot("wizard_finish_tapped")
+                    setupComplete = true
+                    logBoot("wizard_finish_done")
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
     }

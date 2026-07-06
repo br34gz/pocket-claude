@@ -19,6 +19,7 @@ final class StubVMEngine: VMEngine {
     private static let prompt = "pocket-claude:stub$ "
 
     func start() {
+        "stub_engine_start".withCString { pocket_boot_log($0) }
         guard state == .stopped || isError else { return }
         state = .starting
         generation += 1

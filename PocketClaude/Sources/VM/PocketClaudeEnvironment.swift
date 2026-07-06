@@ -3,11 +3,23 @@ import SwiftUI
 
 /// Shared, observable state that both the wizard and main view read/write:
 /// which VM engine to hand the terminal, workspace URL, auth handoff URL.
-/// Not @MainActor because SwiftUI's @StateObject property-initializer
-/// runs during view init and Swift-6 strict concurrency will crash at
-/// launch if the environment is annotated. All publishes happen through
-/// DispatchQueue.main hops instead.
+///
+/// Exposed via a process-wide singleton (`PocketClaudeEnvironment.shared`)
+/// rather than SwiftUI's environment plumbing. v0.2.2 confirmed the app
+/// itself launches; v0.2.2 also crashed when the wizard's "Finish" button
+/// flipped `setupComplete` and the RootView swapped from SetupWizardView
+/// to MainView. Most likely culprit: MainView used `@EnvironmentObject`
+/// for this class, and `@EnvironmentObject` `fatalError`s if the object
+/// isn't found in the environment during the transition. Sidestepping
+/// that entirely by not touching SwiftUI's environment for state.
+///
+/// Not @MainActor because @StateObject property-initializer runs during
+/// view init and Swift-6 strict concurrency will crash at launch if the
+/// environment is annotated. All publishes happen through DispatchQueue
+/// .main hops instead.
 final class PocketClaudeEnvironment: ObservableObject {
+    static let shared = PocketClaudeEnvironment()
+
     @Published private(set) var engine: (any VMEngine)?
     @Published var pendingAuthURL: URL?
     @Published var vmState: VMState = .stopped
@@ -20,6 +32,7 @@ final class PocketClaudeEnvironment: ObservableObject {
     private var seenURLs = Set<String>()
 
     func startEngine() {
+        "env_start_engine".withCString { pocket_boot_log($0) }
         stopEngine()
         let workspacePath = resolvedWorkspacePath()
         _ = workspacePath  // unused in diagnostic build; keeps the resolver warm
@@ -36,15 +49,15 @@ final class PocketClaudeEnvironment: ObservableObject {
         real.onStateChange = { [weak self] s in
             DispatchQueue.main.async { self?.vmState = s }
         }
-        // Wrap output to also scan for auth URLs — belt and braces
-        // for M3 when the guest's control-channel emitter hasn't caught
-        // the URL (e.g. it flew past before we hooked up).
-        let originalOnOutput = real.onOutput
-        real.onOutput = { [weak self, weak real] bytes in
-            originalOnOutput?(bytes)
-            real?.onOutput = originalOnOutput
-            self?.scanForAuthURL(bytes)
-        }
+        // NOTE: previous versions installed a wrapper on `real.onOutput`
+        // here to tee bytes into the URL scanner. Two bugs made this a
+        // no-op AND a self-destructing closure that reset the callback:
+        //   1. TerminalHostView.makeUIView reassigns engine.onOutput
+        //      right after, overwriting our wrapper.
+        //   2. The wrapper set `real?.onOutput = originalOnOutput` on
+        //      each invocation, unhooking itself.
+        // Deferred URL scanning to a v0.2.4+ pass; for the diagnostic
+        // stub build it wasn't reachable anyway (no live claude URLs).
         engine = real
         real.start()
     }
