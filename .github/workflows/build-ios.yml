@@ -270,7 +270,50 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketDev v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            PocketDev v0.7.3 - Bun stability knobs + fixed smoke test + failure card.
+            PocketDev v0.7.4 - workspace 9p in CI smoke + rootfs polish.
+
+            v0.7.3 device report: no more GC crash (BUN_JSC_ knobs
+            landed cleanly), but claude hit a fresh Bun fs error under
+            9p:
+              "The argument 'path' must be a string, Uint8Array, or
+               URL without null bytes. Received /workspace/.claude/workflows"
+
+            Root cause of the CI/device gap: v0.7.3's CI smoke booted
+            the guest with NO /workspace mount. Claude ran in a fresh
+            $HOME and never touched the 9p filesystem code path that
+            actually reproduces the bug on device. v0.7.4 fixes that
+            gap and takes several shots at the fs error itself.
+
+            Changes:
+
+            1. Smoke test (guest/smoke-test-qcow2.py) now mounts a
+               real virtio-9p /workspace, matching the app's exact
+               QEMUVMEngine argv. Pre-populated with .claude/{workflows,
+               sessions,logs,cache} skeleton before boot.
+
+            2. Rootfs polish per ChatGPT diagnosis + user report:
+                 apt install sudo wget curl less procps net-tools
+                             iproute2 iputils-ping
+                 /etc/sudoers.d/dev -> dev ALL=(ALL) NOPASSWD:ALL
+                 (dev now `sudo -i`s without a password prompt)
+
+            3. Pre-create /home/dev/.claude/{workflows,sessions,logs,
+               cache} in the rootfs at build time AND
+               /workspace/.claude/... at boot in /pocket-init. Theory:
+               claude-code's "null bytes" error is a Bun fs bug when
+               it tries to CREATE dirs it expects to exist. If they
+               already exist, that code path is skipped.
+
+            4. /etc/profile.d/claude.sh adds TMPDIR=$HOME/tmp so
+               anything writing to $TMPDIR gets a definitely-writable
+               path even if /tmp is weird under 9p mount.
+
+            5. /pocket-init runs `chmod 1777 /tmp` very early so any
+               tooling that writes to /tmp/... works (curl -o, npm
+               install scripts, etc).
+
+            v0.7.3 knobs (BUN_JSC_useJIT=0, BUN_JSC_useConcurrentGC=0,
+            NODE_OPTIONS=--max-old-space-size=512) all still active.
 
             v0.7.2 device report: Debian glibc guest booted cleanly,
             `claude --version` printed, but interactive claude crashed

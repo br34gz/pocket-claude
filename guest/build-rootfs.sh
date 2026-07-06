@@ -28,9 +28,10 @@ apt-get install -y --no-install-recommends \
     systemd systemd-sysv udev dbus \
     linux-image-arm64 \
     ifupdown isc-dhcp-client ca-certificates \
-    bash curl git openssh-client \
+    bash curl wget git openssh-client sudo \
+    less procps net-tools iproute2 iputils-ping \
     nodejs npm ripgrep \
-    locales less vim-tiny tzdata rsync
+    locales vim-tiny tzdata rsync
 
 # --- Install claude-code from npm ---------------------------------------
 # Debian's npm defaults to prefix=/usr/local, so binaries land at
@@ -60,9 +61,27 @@ echo debian-12 > /etc/pocketdev-os
 echo "$CLAUDE_VARIANT" > /etc/pocketdev-variant
 echo "$CLAUDE_VERSION" > /etc/pocketdev-version
 
-# dev user
+# dev user + passwordless sudo (user needs to install extra tooling
+# at runtime; sudo -i from the shell becomes root without a password).
 useradd -m -s /bin/bash dev
 passwd -d dev || true
+usermod -aG sudo dev || true
+mkdir -p /etc/sudoers.d
+cat > /etc/sudoers.d/dev <<'EOF'
+dev ALL=(ALL) NOPASSWD:ALL
+EOF
+chmod 440 /etc/sudoers.d/dev
+
+# Pre-create the .claude state dirs in both /home/dev and (via
+# /pocket-init at runtime) /workspace. v0.7.4 theory: claude-code
+# hits a "null bytes" fs error under TCTI aarch64 emulation when it
+# tries to touch/create directories that don't yet exist. If we
+# pre-populate them, claude walks existing dirs instead.
+mkdir -p /home/dev/.claude/workflows \
+         /home/dev/.claude/sessions \
+         /home/dev/.claude/logs \
+         /home/dev/.claude/cache
+mkdir -p /home/dev/tmp
 
 # Autologin: bypass systemd's init entirely. Both v0.6.0's serial-getty
 # override and v0.6.1's pocket-console.service failed to preempt the
@@ -94,6 +113,11 @@ mount -t devpts   devpts   /dev/pts  2>/dev/null
 mount -t tmpfs    tmpfs    /dev/shm  2>/dev/null
 mount -t tmpfs    tmpfs    /run      2>/dev/null
 
+# v0.7.4: /tmp needs the sticky bit + world-writable perms so tooling
+# like curl -o /tmp/... and npm's install scripts can drop files
+# there. Rootfs may ship it wrong; fix at init time.
+chmod 1777 /tmp 2>/dev/null
+
 # Apply hostname from /etc/hostname (systemd would do this; we don't
 # run systemd, so we do it manually).
 if [ -f /etc/hostname ]; then
@@ -114,9 +138,24 @@ done
 # Static DNS for SLIRP (dhclient may or may not populate resolv.conf).
 echo "nameserver 10.0.2.3" > /etc/resolv.conf
 
-# 9p workspace (optional in CI, present on-device).
+# 9p workspace (present on device AND in CI's smoke test since v0.7.4).
 mkdir -p /workspace
 mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000 workspace /workspace 2>/dev/null
+
+# v0.7.4: pre-create the .claude state dirs on the workspace so
+# claude-code walks existing dirs instead of trying to create them
+# (which under TCTI aarch64 emulation trips a Bun fs bug that
+# reports "path ... without null bytes"). Cheap and non-destructive:
+# `mkdir -p` is a no-op if the dirs already exist.
+if mountpoint -q /workspace 2>/dev/null; then
+    mkdir -p /workspace/.claude/workflows \
+             /workspace/.claude/sessions \
+             /workspace/.claude/logs \
+             /workspace/.claude/cache 2>/dev/null
+    # 9p security_model=mapped translates host uid/gid; chown to
+    # ensure dev user can write.
+    chown -R dev:dev /workspace/.claude 2>/dev/null || true
+fi
 
 # Control channel: emit BOOT_OK + variant + os on hvc0 if present.
 if [ -e /dev/hvc0 ]; then
@@ -159,18 +198,17 @@ EOF
 mkdir -p /etc/profile.d
 cat > /etc/profile.d/claude.sh <<'EOF'
 export USE_BUILTIN_RIPGREP=0
-# v0.7.3: Bun runs claude-code. Its embedded JavaScriptCore hits
-# increasingly obscure assertions under QEMU TCTI aarch64 emulation
-# as we disable higher tiers:
-#   v0.7.1 -> DFG SpeculativeJIT isFlushed() assertion. Killed DFG.
-#   v0.7.2 -> concurrent GC "Block marks not empty" race. Killed here.
-# Bun bails on the FIRST invalid JSC option name it sees (verified in
-# v0.7.3 CI where useThreadedGC didn't exist and Bun refused to start).
-# Only ship options we've confirmed exist in this Bun version:
+# v0.7.3 Bun-under-TCTI stability knobs. Only options confirmed to
+# exist in this Bun version - Bun bails on the first unknown name.
 export BUN_JSC_useJIT=0                # Kill ALL JIT tiers -> LLInt only.
 export BUN_JSC_useConcurrentGC=0       # Kills the concurrent-marking race.
-# Belt-and-braces heap cap so we don't push against the guest's RAM.
 export NODE_OPTIONS="--max-old-space-size=512"
+
+# v0.7.4: point TMPDIR at a definitely-writable spot inside $HOME so
+# any tool that writes to $TMPDIR isn't tripped up by /tmp weirdness
+# on the 9p mount or elsewhere.
+export TMPDIR="$HOME/tmp"
+mkdir -p "$TMPDIR" 2>/dev/null
 EOF
 mkdir -p /home/dev/.claude
 cat > /home/dev/.claude/settings.json <<'EOF'

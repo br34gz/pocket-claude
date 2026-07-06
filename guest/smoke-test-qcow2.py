@@ -2,18 +2,23 @@
 """
 Full system-mode QEMU boot smoke test for the guest qcow2.
 
-Runs on ubuntu-latest CI. Boots the packed image with the same layout
+Runs on ubuntu-latest CI. Boots the packed image with the SAME layout
 the iOS app uses (direct kernel, virtio-net-device MMIO, virtio-serial
-control channel, unix-socket console + control chardevs) and watches
-the console for either:
+control channel, unix-socket console+control chardevs, virtio-9p
+workspace passthrough) and watches the console for either:
 
-  PASS - "claude --version: X.Y.Z" printed by the .profile probe
-         WITHOUT any of the known Bun-crash markers appearing.
-  FAIL - "Module not found" / "TypeError" / "null bytes" seen on
-         the console at any point before PASS.
+  PASS - `claude --version: X.Y.Z` printed AND interactive claude
+         survives INTERACTIVE_WATCH_S seconds without a fail marker.
+  FAIL - one of FAIL_MARKERS seen on the console during the run.
 
-Times out after TIMEOUT_S seconds; interpreter-mode boot of Alpine +
-Node.js startup on x86_64 CI is slow but should be well under 5 min.
+v0.7.4: added virtio-9p workspace mount. Previous smokes booted with
+no /workspace, so claude ran in a fresh $HOME and didn't touch the
+9p mount that on-device triggers `null bytes` fs errors. The smoke
+now mirrors on-device conditions, including a pre-created skeleton
+of directories the guest's /pocket-init would set up.
+
+usage:
+    smoke-test-qcow2.py <qcow2> <vmlinuz> <initramfs> [<workspace_dir>]
 """
 from __future__ import annotations
 
@@ -24,16 +29,14 @@ import subprocess
 import sys
 import time
 
-TIMEOUT_S = 900  # 15 minutes hard ceiling (Debian systemd + interpreter is slow)
+TIMEOUT_S = 900
+INTERACTIVE_WATCH_S = 60
 CONSOLE_SOCK = "/tmp/smoke-console.sock"
 CONTROL_SOCK = "/tmp/smoke-control.sock"
+DEFAULT_WORKSPACE = "/tmp/pocket-ws"
+
 SUCCESS_RE = re.compile(rb"claude --version:\s*([0-9]+\.[0-9]+\.[0-9]+)")
-# The .profile prints "claude --version" FIRST, then runs interactive
-# `claude`. v0.5.1 got a clean version line but interactive claude
-# still hit the null-bytes crash. Watch for the crash for INTERACTIVE_WATCH_S
-# after seeing the version line and only declare PASS at the end of that
-# window if nothing bad printed.
-INTERACTIVE_WATCH_S = 60
+
 FAIL_MARKERS = [
     b"Module not found",
     b"null bytes",
@@ -42,23 +45,38 @@ FAIL_MARKERS = [
     b"Segmentation fault",
     b"claude --version FAILED",
     b"claude exited unexpectedly",
-    # Bun / JavaScriptCore DFG JIT tier assertion (v0.7.0 crash mode,
-    # fixed in v0.7.1 by disabling DFG).
+    # Bun / JavaScriptCore DFG JIT tier assertion (v0.7.0 mode).
     b"DFG ASSERTION",
     b"isFlushed()",
-    # Bun / JavaScriptCore concurrent-GC race (v0.7.2 crash mode).
-    # v0.7.3 disables concurrent GC + all JIT tiers; these markers
-    # catch a regression.
+    # Bun / JavaScriptCore concurrent-GC race (v0.7.2 mode).
     b"marks not empty",
     b"Block lock is held",
     b"Marking version of block",
     b"Marking version of heap",
-    b"ASSERTION FAILED",  # generic JSC assertion prefix; broad catch.
+    b"ASSERTION FAILED",
+    # Generic Node process crash surface.
+    b"Claude Code could not start",
 ]
 
 
-def start_qemu(qcow2: str, kernel: str, initrd: str) -> subprocess.Popen:
-    """Boot the guest with the same argv shape the iOS app uses."""
+def prep_workspace(root: str) -> str:
+    """Create the workspace dir the guest will mount over virtio-9p.
+
+    Pre-creates the .claude skeleton so claude-code doesn't hit its
+    directory-touch code path first thing (theory: that path is where
+    the `null bytes` fs error fires under TCTI emulation - if the
+    dirs exist, claude walks them instead of trying to create them).
+    """
+    os.makedirs(root, exist_ok=True)
+    for sub in ("workflows", "sessions", "logs", "cache"):
+        os.makedirs(os.path.join(root, ".claude", sub), exist_ok=True)
+    # 9p mount needs the outer dir world-readable for the security_model
+    # to translate uid/gid properly. Fine on a throwaway CI mount.
+    os.chmod(root, 0o777)
+    return root
+
+
+def start_qemu(qcow2: str, kernel: str, initrd: str, workspace: str) -> subprocess.Popen:
     for p in (CONSOLE_SOCK, CONTROL_SOCK):
         try:
             os.unlink(p)
@@ -84,6 +102,11 @@ def start_qemu(qcow2: str, kernel: str, initrd: str) -> subprocess.Popen:
         "-device", "virtio-serial-device,id=vser0",
         "-chardev", f"socket,id=ctrl0,path={CONTROL_SOCK},server=on,wait=off",
         "-device", "virtserialport,chardev=ctrl0,name=pocket.control",
+        # v0.7.4: virtio-9p workspace passthrough matching the app's
+        # QEMUVMEngine args. Guest mounts this at /workspace via
+        # /pocket-init (or /etc/fstab if systemd were doing it).
+        "-fsdev", f"local,security_model=mapped,id=fsdev0,path={workspace}",
+        "-device", f"virtio-9p-pci,fsdev=fsdev0,mount_tag=workspace",
     ]
     print("== launching qemu ==")
     print(" ".join(args))
@@ -104,11 +127,15 @@ def connect_sock(path: str, retries: int = 60, delay: float = 0.5):
 
 def main() -> int:
     if len(sys.argv) < 4:
-        print(f"usage: {sys.argv[0]} <qcow2> <vmlinuz> <initramfs>", file=sys.stderr)
+        print(f"usage: {sys.argv[0]} <qcow2> <vmlinuz> <initramfs> [<workspace_dir>]",
+              file=sys.stderr)
         return 2
     qcow2, kernel, initrd = sys.argv[1:4]
+    workspace = sys.argv[4] if len(sys.argv) > 4 else DEFAULT_WORKSPACE
+    workspace = prep_workspace(workspace)
+    print(f"[smoke] workspace at {workspace} pre-populated with .claude/ skeleton")
 
-    qemu = start_qemu(qcow2, kernel, initrd)
+    qemu = start_qemu(qcow2, kernel, initrd, workspace)
     try:
         console = connect_sock(CONSOLE_SOCK)
         control = connect_sock(CONTROL_SOCK)
@@ -123,13 +150,10 @@ def main() -> int:
         claude_variant = None
         guest_os = None
         detected_version = None
-        version_seen_at = None  # timestamp when we first saw --version
+        version_seen_at = None
 
         while time.time() < deadline:
-            for name, sock, buf_name in (
-                ("console", console, "console_buffer"),
-                ("control", control, "control_buffer"),
-            ):
+            for name, sock in (("console", console), ("control", control)):
                 try:
                     data = sock.recv(4096)
                 except BlockingIOError:
@@ -145,7 +169,6 @@ def main() -> int:
                     sys.stdout.buffer.flush()
                 else:
                     control_buffer += data
-                    # Handle CR+LF or LF
                     while b"\n" in control_buffer:
                         line, control_buffer = control_buffer.split(b"\n", 1)
                         line = line.strip()
@@ -175,8 +198,6 @@ def main() -> int:
                         f"Watching interactive claude for {INTERACTIVE_WATCH_S}s..."
                     )
             elif time.time() - version_seen_at > INTERACTIVE_WATCH_S:
-                # Held the interactive window open long enough with no fail
-                # markers - declare PASS.
                 print(
                     f"\nSMOKE PASS: claude --version -> {detected_version} "
                     f"and interactive claude survived {INTERACTIVE_WATCH_S}s "

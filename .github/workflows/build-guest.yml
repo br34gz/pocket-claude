@@ -109,9 +109,16 @@ jobs:
             qemu-system-arm python3
 
       - name: System-mode QEMU boot smoke test (TCG on x86_64)
+        # v0.7.4: pass an explicit workspace dir so the smoke boots
+        # with virtio-9p /workspace mounted, matching device conditions.
+        # The dir gets pre-populated with a .claude skeleton (workflows,
+        # sessions, logs, cache) so claude doesn't hit its "create dir"
+        # code path first thing.
         run: |
+          rm -rf /tmp/pocket-ws
           python3 guest/smoke-test-qcow2.py \
-            alpine-claude.qcow2 out/vmlinuz-virt out/initramfs-virt
+            alpine-claude.qcow2 out/vmlinuz-virt out/initramfs-virt \
+            /tmp/pocket-ws
 
       - name: Publish guest-latest release
         uses: softprops/action-gh-release@v2
