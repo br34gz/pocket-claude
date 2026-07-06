@@ -9,8 +9,24 @@ enum BootStage: Int, Comparable, Sendable {
     case loggingIn      = 3  // "Logging in..."           (login: prompt seen)
     case startingClaude = 4  // "Starting Claude Code..." (version probe printed)
     case ready          = 5  // dismiss overlay           (claude TUI up)
+    case claudeFailed   = 6  // Claude Code crashed/exited (console fail marker)
+    case timedOut       = 7  // 90 s watchdog fired before .ready
 
     static func < (a: BootStage, b: BootStage) -> Bool { a.rawValue < b.rawValue }
+
+    /// True when the overlay should show the animated boot card.
+    var isProgressing: Bool {
+        switch self {
+        case .launching, .booting, .loggingIn, .startingClaude: return true
+        default: return false
+        }
+    }
+
+    /// True when the overlay should show a failure card with Restart /
+    /// Go-to-terminal buttons.
+    var isFailure: Bool {
+        self == .claudeFailed || self == .timedOut
+    }
 
     var title: String {
         switch self {
@@ -20,6 +36,8 @@ enum BootStage: Int, Comparable, Sendable {
         case .loggingIn:      return "Logging in..."
         case .startingClaude: return "Starting Claude Code..."
         case .ready:          return "Ready"
+        case .claudeFailed:   return "Claude Code didn't start"
+        case .timedOut:       return "Taking longer than expected"
         }
     }
 
@@ -31,6 +49,7 @@ enum BootStage: Int, Comparable, Sendable {
         case .loggingIn:        return 0.65
         case .startingClaude:   return 0.90
         case .ready:            return 1.0
+        case .claudeFailed, .timedOut: return 1.0
         }
     }
 }

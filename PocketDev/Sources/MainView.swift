@@ -62,29 +62,84 @@ struct MainView: View {
 
     @ViewBuilder
     private var statusOverlay: some View {
-        switch env.vmState {
-        case .starting, .running:
-            if env.bootStage != .ready && env.bootStage != .idle {
-                bootStageCard
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                    .animation(.easeInOut(duration: 0.35), value: env.bootStage)
-            }
-        case .error(let msg):
-            errorCard(title: "VM error", message: msg)
-        case .stopped:
-            if env.sessionSawSerial {
-                let msg: String = {
-                    let base = "The kernel started printing, then the session ended. Most likely iOS killed the process for memory pressure. Try lowering guest RAM in Settings (currently \(GuestRAM.current()) MB)."
-                    if env.selectedVariant == "se" {
-                        return base + "\n\nYou're in interpreter mode. If you want JIT: install via SideStore/AltStore instead of LiveContainer, then launch under StikDebug. LiveContainer's PluginKit runtime interferes with StikDebug's register injection."
-                    }
-                    return base
-                }()
-                errorCard(title: "VM session ended", message: msg)
-            } else {
-                EmptyView()
+        // v0.7.3: failure card (Claude crashed / boot timed out) takes
+        // priority over the VM state routing so the user isn't stuck
+        // staring at the animation.
+        if env.bootStage.isFailure {
+            claudeFailureCard
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.3), value: env.bootStage)
+        } else {
+            switch env.vmState {
+            case .starting, .running:
+                if env.bootStage.isProgressing {
+                    bootStageCard
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                        .animation(.easeInOut(duration: 0.35), value: env.bootStage)
+                }
+            case .error(let msg):
+                errorCard(title: "VM error", message: msg)
+            case .stopped:
+                if env.sessionSawSerial {
+                    let msg: String = {
+                        let base = "The kernel started printing, then the session ended. Most likely iOS killed the process for memory pressure. Try lowering guest RAM in Settings (currently \(GuestRAM.current()) MB)."
+                        if env.selectedVariant == "se" {
+                            return base + "\n\nYou're in interpreter mode. If you want JIT: install via SideStore/AltStore instead of LiveContainer, then launch under StikDebug. LiveContainer's PluginKit runtime interferes with StikDebug's register injection."
+                        }
+                        return base
+                    }()
+                    errorCard(title: "VM session ended", message: msg)
+                } else {
+                    EmptyView()
+                }
             }
         }
+    }
+
+    /// v0.7.3 failure card: claude-code crashed or the 90s watchdog
+    /// fired without reaching .ready. Explains briefly, offers Restart
+    /// (fresh VM start) and Go to terminal (dismiss overlay, expose
+    /// the raw terminal for debugging).
+    private var claudeFailureCard: some View {
+        let timedOut = env.bootStage == .timedOut
+        return VStack(spacing: 14) {
+            Image(systemName: timedOut ? "clock.badge.exclamationmark" : "xmark.octagon.fill")
+                .font(.system(size: 32))
+                .foregroundStyle(timedOut ? .orange : .red)
+            Text(env.bootStage.title)
+                .font(.headline)
+                .foregroundStyle(.white)
+            Text(timedOut
+                 ? "The VM has been booting for over 90 seconds without reaching Claude Code. It may still catch up, or it may have stalled. Check the terminal for kernel/systemd messages."
+                 : "Claude Code exited while starting up. This is usually a Bun runtime bug under interpreter emulation; the terminal below has the actual error trace."
+            )
+            .font(.footnote)
+            .foregroundStyle(.white.opacity(0.85))
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 12)
+            HStack(spacing: 10) {
+                Button {
+                    env.startEngine()
+                } label: {
+                    Label("Restart VM", systemImage: "arrow.clockwise")
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                Button {
+                    env.dismissBootOverlay()
+                } label: {
+                    Label("Go to terminal", systemImage: "terminal")
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: 340)
+        .background(.black.opacity(0.9))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     /// v0.7.2 boot-stages overlay. Advances through 4 named stages

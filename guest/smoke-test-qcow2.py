@@ -42,11 +42,18 @@ FAIL_MARKERS = [
     b"Segmentation fault",
     b"claude --version FAILED",
     b"claude exited unexpectedly",
-    # Bun / JavaScriptCore DFG JIT tier assertion under TCTI aarch64
-    # emulation (v0.7.0 crash mode). v0.7.1 disables the DFG + FTL
-    # tiers via BUN_JSC_ env vars; this marker catches any regression.
+    # Bun / JavaScriptCore DFG JIT tier assertion (v0.7.0 crash mode,
+    # fixed in v0.7.1 by disabling DFG).
     b"DFG ASSERTION",
     b"isFlushed()",
+    # Bun / JavaScriptCore concurrent-GC race (v0.7.2 crash mode).
+    # v0.7.3 disables concurrent GC + all JIT tiers; these markers
+    # catch a regression.
+    b"marks not empty",
+    b"Block lock is held",
+    b"Marking version of block",
+    b"Marking version of heap",
+    b"ASSERTION FAILED",  # generic JSC assertion prefix; broad catch.
 ]
 
 

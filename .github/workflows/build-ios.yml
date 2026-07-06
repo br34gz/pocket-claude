@@ -270,7 +270,53 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketDev v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            PocketDev v0.7.2 - boot animation + status sheet UX fixes.
+            PocketDev v0.7.3 - Bun stability knobs + fixed smoke test + failure card.
+
+            v0.7.2 device report: Debian glibc guest booted cleanly,
+            `claude --version` printed, but interactive claude crashed
+            with a JavaScriptCore concurrent-GC race ("Block marks not
+            empty" / "Block lock is held"). Same underlying issue as
+            v0.7.0 (DFG assertion) and v0.5.x (musl null-bytes): Bun's
+            embedded JavaScriptCore hits assertions under QEMU TCTI
+            aarch64 emulation. Also: the CI smoke test was giving false
+            green because it ran on the ubuntu-24.04-arm runner where
+            qemu-system-aarch64 defaults to TCG-on-arm-host - similar
+            in kind to on-device but different in timing, so JIT/GC-
+            sensitive bugs slip through.
+
+            v0.7.3 changes:
+
+            1. Guest exports the full Bun stability knob set in
+               /etc/profile.d/claude.sh:
+                 BUN_JSC_useJIT=0            (kill all JIT tiers)
+                 BUN_JSC_useDFGJIT=0         (belt+braces vs v0.7.0)
+                 BUN_JSC_useFTLJIT=0         (belt+braces)
+                 BUN_JSC_useConcurrentGC=0   (fixes v0.7.2 GC race)
+                 BUN_JSC_useConcurrentJIT=0
+                 BUN_JSC_useGenerationalGC=0
+                 BUN_JSC_useThreadedGC=0
+                 BUN_GC_HEAP_GROW_FACTOR=1.5
+                 NODE_OPTIONS=--max-old-space-size=512
+
+            2. Guest CI split into two jobs:
+                 build (ubuntu-24.04-arm, native)
+                 smoke_publish (ubuntu-latest, x86_64 TCG)
+               Smoke now matches on-device UTM-SE.ipa TCTI conditions
+               so JIT/GC bugs fail CI before release publishes.
+
+            3. Smoke test's FAIL_MARKERS gains v0.7.2's crash signatures:
+                 "marks not empty", "Block lock is held",
+                 "Marking version of block/heap", "ASSERTION FAILED"
+
+            4. UI: BootStage gains .claudeFailed + .timedOut cases.
+               PocketDevEnvironment's console scanner detects
+               "claude exited unexpectedly" / "marks not empty" etc
+               and transitions to .claudeFailed. 90s watchdog on
+               launch: if we don't reach .ready by then -> .timedOut.
+               MainView renders a failure card with "Restart VM"
+               and "Go to terminal" buttons - user is no longer
+               stuck watching the progress animation on a broken
+               boot.
 
             v0.7.1 shipped the glibc guest with Bun DFG off but two
             UX bugs remained:

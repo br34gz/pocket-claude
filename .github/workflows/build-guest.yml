@@ -1,8 +1,20 @@
 name: Build guest image
 
-# Builds the Alpine aarch64 guest disk image (spec section 4) and publishes
-# it under the rolling "guest-latest" release. The iOS build fetches these
-# assets and embeds them in the app bundle.
+# Two-job workflow (v0.7.3+):
+#   build       - runs on ubuntu-24.04-arm (native arm64). Fast, because
+#                 apt/dpkg run at native speed with no qemu-user
+#                 emulation.
+#   smoke_publish - runs on ubuntu-latest (x86_64). Runs the packed
+#                 qcow2 under qemu-system-aarch64 in pure TCG interpreter
+#                 mode - which is exactly the stress path the device
+#                 experiences (UTM-SE.ipa's qemu is a TCTI interpreter
+#                 build; no JIT). Previous builds' smoke test ran on
+#                 the arm64 runner where qemu-system-aarch64 defaults
+#                 to TCG BUT the host is arm64 too, so timing looks
+#                 different. Bun's JavaScriptCore GC race in v0.7.2 was
+#                 masked by this - the smoke passed on CI, the app
+#                 crashed on device. Splitting so the smoke matches
+#                 device conditions.
 
 on:
   push:
@@ -18,13 +30,12 @@ permissions:
 jobs:
   build:
     name: Build alpine-claude.qcow2
-    # ubuntu-24.04-arm is GitHub's free arm64 runner for public repos.
-    # v0.6.0's earlier attempts on ubuntu-latest x86_64 + qemu-user
-    # binfmt hit the 45-min workflow timeout on the Debian package
-    # install alone - every dpkg call was emulated. Native arm64
-    # brings the build back to ~2-3 min.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    timeout-minutes: 30
+    outputs:
+      variant: ${{ steps.variant.outputs.variant }}
+      version: ${{ steps.variant.outputs.version }}
+      guest_os: ${{ steps.variant.outputs.guest_os }}
 
     steps:
       - name: Checkout
@@ -37,8 +48,6 @@ jobs:
             -v "$PWD/guest:/guest:ro" \
             -v "$PWD/out:/out" \
             debian:12-slim bash /guest/build-rootfs.sh
-          # Container writes as root; make outputs readable for the
-          # release upload step.
           sudo chmod -R a+r out
 
       - name: Create qcow2 disk image
@@ -47,8 +56,6 @@ jobs:
           sudo apt-get install -y -q qemu-utils zstd e2fsprogs
           sudo mkdir -p rootfs
           sudo tar -xpf out/rootfs.tar -C rootfs
-          # 2 GB virtual disk (spec section 3: headroom for claude
-          # auto-updates + caches); qcow2 stays thin.
           truncate -s 2G disk.ext4
           sudo mkfs.ext4 -q -L alpine -d rootfs disk.ext4
           qemu-img convert -f raw -O qcow2 disk.ext4 alpine-claude.qcow2
@@ -62,18 +69,47 @@ jobs:
           echo "version=$(cat out/claude-version.txt 2>/dev/null || echo unknown)" >> "$GITHUB_OUTPUT"
           echo "guest_os=$(cat out/guest-os.txt 2>/dev/null || echo unknown)" >> "$GITHUB_OUTPUT"
 
-      - name: System-mode QEMU boot smoke test
-        # Boots the packed qcow2 exactly the way the iOS app does
-        # (direct kernel, virtio-net-device MMIO, virtio-serial control
-        # channel, unix-socket console + control chardevs). The .profile
-        # runs `claude --version` at auto-login; the driver watches the
-        # console for either the version line (PASS) or one of the
-        # known Bun-crash markers (FAIL). This is the definitive test -
-        # if it works here, it works on device, because the interpreter
-        # backend, kernel, initramfs, rootfs, and userspace are the
-        # same. Only speed differs.
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-image
+          path: |
+            alpine-claude.qcow2
+            alpine-claude.qcow2.zst
+            out/vmlinuz-virt
+            out/initramfs-virt
+            out/claude-variant.txt
+            out/claude-version.txt
+            out/guest-os.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  smoke_publish:
+    name: Smoke test (x86_64 TCG) and publish
+    needs: build
+    runs-on: ubuntu-latest    # x86_64 - qemu-system-aarch64 runs in pure
+                              # TCG interpreter mode here, no arm64 host
+                              # optimisations. Matches on-device UTM-SE.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout (for smoke-test-qcow2.py)
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: guest-image
+          path: .
+
+      - name: Install qemu-system-aarch64 (TCG interpreter)
         run: |
-          sudo apt-get install -y -q qemu-system-arm python3
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            qemu-system-arm python3
+
+      - name: System-mode QEMU boot smoke test (TCG on x86_64)
+        run: |
           python3 guest/smoke-test-qcow2.py \
             alpine-claude.qcow2 out/vmlinuz-virt out/initramfs-virt
 
@@ -83,11 +119,16 @@ jobs:
           tag_name: guest-latest
           name: "Guest image (rolling)"
           body: |
-            Alpine aarch64 guest image for PocketDev, built from guest/.
+            aarch64 guest image for PocketDev, built from guest/.
 
-            guest_os:       ${{ steps.variant.outputs.guest_os }}
-            claude_variant: ${{ steps.variant.outputs.variant }}
-            claude_version: ${{ steps.variant.outputs.version }}
+            guest_os:       ${{ needs.build.outputs.guest_os }}
+            claude_variant: ${{ needs.build.outputs.variant }}
+            claude_version: ${{ needs.build.outputs.version }}
+
+            Smoke test: ubuntu-latest (x86_64) + qemu-system-aarch64 TCG.
+            This matches the on-device runtime characteristics of
+            UTM-SE.ipa's TCTI-interpreter QEMU. If the smoke passes
+            here, it should pass on device.
 
             Commit: ${{ github.sha }}
             Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

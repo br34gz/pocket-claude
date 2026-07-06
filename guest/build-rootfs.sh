@@ -159,13 +159,23 @@ EOF
 mkdir -p /etc/profile.d
 cat > /etc/profile.d/claude.sh <<'EOF'
 export USE_BUILTIN_RIPGREP=0
-# v0.7.1: Bun's DFG JIT tier hits an assertion failure under QEMU TCTI
-# aarch64 emulation (DFGSpeculativeJIT64.cpp:785, isFlushed() check).
-# JavaScriptCore honours BUN_JSC_ prefixes for its runtime options.
-# Disable DFG + FTL tiers - LLInt + Baseline still get to run, so we
-# lose some perf but keep functionality.
-export BUN_JSC_useDFGJIT=0
-export BUN_JSC_useFTLJIT=0
+# v0.7.3: Bun runs claude-code. Its embedded JavaScriptCore hits
+# increasingly obscure assertions under QEMU TCTI aarch64 emulation
+# as we disable higher tiers:
+#   v0.7.1 -> DFG SpeculativeJIT isFlushed() assertion. Killed DFG.
+#   v0.7.2 -> concurrent GC "Block marks not empty" race. Killed here.
+# Turn every knob to the simplest setting we can.
+export BUN_JSC_useJIT=0                # Kill ALL JIT tiers -> LLInt only.
+export BUN_JSC_useDFGJIT=0             # Redundant with useJIT=0; belt+braces.
+export BUN_JSC_useFTLJIT=0             # Redundant.
+export BUN_JSC_useConcurrentGC=0       # Kills the concurrent-marking race.
+export BUN_JSC_useConcurrentJIT=0      # No concurrent JIT compilation threads.
+export BUN_JSC_useGenerationalGC=0     # Simpler single-generation collector.
+export BUN_JSC_useThreadedGC=0         # No parallel GC workers.
+export BUN_GC_HEAP_GROW_FACTOR=1.5     # Smaller heap growth.
+# Also cap the total Node/Bun heap so we don't push against the guest's
+# 1 GB RAM ceiling too hard.
+export NODE_OPTIONS="--max-old-space-size=512"
 EOF
 mkdir -p /home/dev/.claude
 cat > /home/dev/.claude/settings.json <<'EOF'

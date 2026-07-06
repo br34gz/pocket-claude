@@ -47,6 +47,10 @@ final class PocketDevEnvironment: ObservableObject {
     /// version banner, claude welcome).
     private var consoleTail: String = ""
     private var consoleTailLimit = 4096
+    /// 90-second watchdog. If we don't reach .ready by then, transition
+    /// to .timedOut so MainView can show a fallback card.
+    private var bootWatchdog: DispatchWorkItem?
+    private let bootWatchdogSeconds: TimeInterval = 90
 
     /// URL the guest just published; wizard step 3 offers Safari handoff.
     var latestAuthURL: URL? { pendingAuthURL }
@@ -60,6 +64,7 @@ final class PocketDevEnvironment: ObservableObject {
         sessionSawSerial = false
         bootStage = .launching
         consoleTail = ""
+        armBootWatchdog()
         stopEngine()
         let workspacePath = resolvedWorkspacePath()
         let real: any VMEngine
@@ -111,6 +116,16 @@ final class PocketDevEnvironment: ObservableObject {
             consoleTail.removeFirst(consoleTail.count - consoleTailLimit)
         }
         var next = bootStage
+        // Failure detection runs first: if claude bailed, no forward
+        // progress makes sense.
+        if !next.isFailure,
+           consoleTail.contains("claude exited unexpectedly")
+            || consoleTail.contains("marks not empty")
+            || consoleTail.contains("DFG ASSERTION")
+            || consoleTail.contains("ASSERTION FAILED")
+        {
+            next = .claudeFailed
+        }
         // Stage 2: any console byte means the kernel is emitting.
         if next < .booting { next = .booting }
         // Stage 3: the login prompt (or its Debian header line) appears.
@@ -135,7 +150,36 @@ final class PocketDevEnvironment: ObservableObject {
         if next != bootStage {
             let bs = next
             DispatchQueue.main.async { self.bootStage = bs }
+            if next == .ready || next == .claudeFailed {
+                cancelBootWatchdog()
+            }
         }
+    }
+
+    /// Called by MainView's "Go to terminal" button to dismiss the
+    /// overlay without restarting the VM.
+    func dismissBootOverlay() {
+        cancelBootWatchdog()
+        DispatchQueue.main.async { self.bootStage = .ready }
+    }
+
+    private func armBootWatchdog() {
+        cancelBootWatchdog()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                if self.bootStage.rawValue < BootStage.ready.rawValue {
+                    self.bootStage = .timedOut
+                }
+            }
+        }
+        bootWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + bootWatchdogSeconds, execute: work)
+    }
+
+    private func cancelBootWatchdog() {
+        bootWatchdog?.cancel()
+        bootWatchdog = nil
     }
 
     private func scanForAuthURL(_ bytes: [UInt8]) {
