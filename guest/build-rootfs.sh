@@ -33,17 +33,24 @@ apt-get install -y --no-install-recommends \
     locales less vim-tiny tzdata rsync
 
 # --- Install claude-code from npm ---------------------------------------
+# Debian's npm defaults to prefix=/usr/local, so binaries land at
+# /usr/local/bin/claude (not /usr/bin/claude like Alpine).
 NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false \
     npm install -g --unsafe-perm @anthropic-ai/claude-code
 
-if [[ ! -f /usr/bin/claude ]]; then
-    echo "::error::claude shim missing from /usr/bin"
-    ls /usr/bin | grep -i claude || true
+CLAUDE_BIN=""
+for candidate in /usr/local/bin/claude /usr/bin/claude; do
+    if [[ -f "$candidate" ]]; then CLAUDE_BIN="$candidate"; break; fi
+done
+if [[ -z "$CLAUDE_BIN" ]]; then
+    echo "::error::claude shim not found in /usr/local/bin or /usr/bin"
+    find /usr -name claude 2>/dev/null | head
     exit 1
 fi
+echo "claude installed at $CLAUDE_BIN"
 
-# Quick sanity check (in-container, arm64 native user under qemu-user).
-CLAUDE_VERSION="$(/usr/bin/claude --version 2>/dev/null | head -1 || echo '(unknown)')"
+# Sanity check
+CLAUDE_VERSION="$("$CLAUDE_BIN" --version 2>/dev/null | head -1 || echo '(unknown)')"
 CLAUDE_VARIANT="npm:@anthropic-ai/claude-code@${CLAUDE_VERSION}"
 
 # --- Guest OS configuration ---------------------------------------------
