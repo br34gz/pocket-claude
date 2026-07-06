@@ -15,7 +15,7 @@ jobs:
   build:
     name: Build PocketClaude.ipa
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -46,17 +46,54 @@ jobs:
           xcodegen generate
           ls -la PocketClaude.xcodeproj/
 
-      # v0.2.2 diagnostic build:
-      # - No UTM-SE download
-      # - No QEMU framework extraction / embedding / codesign
-      # - No guest image fetch
-      # Purpose: prove whether the sideload-launch crash lives in the
-      # framework payload (v0.2.1 shipped a full embed with adhoc-signed
-      # UTM frameworks and still SIGHUP'd instantly on the user's device)
-      # or in our own Swift/project setup. If v0.2.2 boots, the bisection
-      # target is the framework payload. If v0.2.2 also crashes, the
-      # target is our Swift/project setup — the boot log at
-      # Documents/pocket-claude-boot.log tells us how far the process got.
+      # v0.2.4 — framework bisection layer "glib".
+      # Embed only the glib-family leaf set that has no external @rpath
+      # dependencies beyond itself (verified by otool -L against UTM-SE
+      # 5.0.3). None of these are dlopen'd by our code — the VM engine
+      # is still routed to the stub. The test is whether iOS amfid /
+      # the sideloader can validate & install these seven frameworks
+      # without triggering the launch crash seen with the full 22-set
+      # in v0.2.0/v0.2.1.
+      #
+      # Frameworks (closed dependency set):
+      #   glib-2.0.0   -> iconv.2, intl.8
+      #   gio-2.0.0    -> glib, gobject, gmodule, intl
+      #   gobject-2.0.0 -> glib, ffi.8
+      #   gmodule-2.0.0 -> glib
+      #   iconv.2      -> (self)
+      #   intl.8       -> iconv.2
+      #   ffi.8        -> (self)
+
+      - name: Fetch UTM-SE (source of the iOS QEMU frameworks)
+        env:
+          UTM_SE_URL: https://github.com/utmapp/UTM/releases/download/v5.0.3/UTM-SE.ipa
+        run: |
+          mkdir -p build/utm
+          curl -sSL "$UTM_SE_URL" -o build/utm/UTM-SE.ipa
+          ls -lh build/utm/UTM-SE.ipa
+          cd build/utm
+          unzip -q UTM-SE.ipa
+
+      - name: Extract glib-layer frameworks only
+        run: |
+          mkdir -p build/staged-frameworks
+          SRC="build/utm/Payload/UTM SE.app/Frameworks"
+          for fw in \
+              glib-2.0.0 gio-2.0.0 gobject-2.0.0 gmodule-2.0.0 \
+              iconv.2 intl.8 ffi.8; do
+            if [[ -d "$SRC/$fw.framework" ]]; then
+              cp -R "$SRC/$fw.framework" build/staged-frameworks/
+            else
+              echo "::error::missing framework $fw in UTM-SE.ipa"
+              exit 1
+            fi
+          done
+          # Strip UTM's ad-hoc resource seals so codesign below emits
+          # fresh, macos-native ones instead of re-writing UTM's.
+          find build/staged-frameworks -name _CodeSignature -type d \
+              -exec rm -rf {} + 2>/dev/null || true
+          du -sh build/staged-frameworks
+          ls build/staged-frameworks
 
       - name: Build archive (no signing)
         run: |
@@ -77,8 +114,22 @@ jobs:
         run: |
           APP=build/PocketClaude.xcarchive/Products/Applications/PocketClaude.app
 
-          # Adhoc-sign the app binary so the sideloader has a clean
-          # baseline to replace. Same as v0.2.1 for the main binary path.
+          mkdir -p "$APP/Frameworks"
+          cp -R build/staged-frameworks/* "$APP/Frameworks/"
+
+          # Same treatment as v0.2.1: strip and re-adhoc-sign every
+          # framework mach-O so the sideloader has a uniform baseline.
+          echo "=== Framework signature normalization ==="
+          for fw in "$APP/Frameworks"/*.framework; do
+            name=$(basename "$fw" .framework)
+            bin="$fw/$name"
+            if [[ -f "$bin" ]] && file "$bin" | grep -q "Mach-O"; then
+              codesign --remove-signature "$bin" 2>/dev/null || true
+              codesign --force --sign - --timestamp=none "$bin"
+              minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')
+              echo "  $name  minos=$minos  signed=adhoc"
+            fi
+          done
           codesign --force --sign - --timestamp=none "$APP/PocketClaude"
           echo "=== Verification ==="
           codesign -dv "$APP" 2>&1 | head -5 || true
@@ -105,33 +156,34 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketClaude v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            DIAGNOSTIC BUILD — no QEMU frameworks, no guest image.
+            FRAMEWORK BISECTION — layer "glib" (7 frameworks embedded).
 
-            v0.2.2 confirmed the sideload launch crash is in the framework
-            payload (not our Swift). v0.2.2 also revealed a separate Swift
-            crash: tapping "Finish" on the wizard's sign-in step. v0.2.3
-            fixes that by switching PocketClaudeEnvironment from
-            @EnvironmentObject to a shared singleton (the former can
-            fatalError during view swap) and extends the boot log so we
-            can see exactly how far the transition to MainView gets.
+            Embedded (from utmapp/UTM v5.0.3 UTM-SE.ipa, ad-hoc re-signed):
+              glib-2.0.0
+              gio-2.0.0
+              gobject-2.0.0
+              gmodule-2.0.0
+              iconv.2
+              intl.8
+              ffi.8
 
-            Expected boot-log sequence after tapping Finish:
-              wizard_finish_tapped, wizard_finish_done, mainview_body,
-              mainview_appear, env_start_engine, stub_engine_start
+            None are dlopen'd or LC_LOAD_DYLIB'd by our code — the VM
+            engine is still routed to the stub. The test is purely
+            whether iOS amfid / the sideloader accept these seven at
+            install/launch without repeating the crash from v0.2.0.
 
             IMPORTANT — DELETE THE PREVIOUS INSTALL FIRST:
-            iOS caches framework signatures per bundle-ID. Long-press the
-            app icon and choose "Remove App" → "Delete App" before
-            sideloading this build. A plain reinstall over v0.2.0/v0.2.1
-            may inherit stale signature state and repeat the crash.
+            Long-press icon → Remove App → Delete App before installing.
+            iOS caches signatures per bundle-ID; a plain reinstall can
+            inherit stale amfid state.
 
-            After launch, the boot log is at:
-              Files → On My iPhone → PocketClaude → pocket-claude-boot.log
-            Expected lines (in order):
-              dylib_ctor       — C constructor ran (main binary loaded)
-              app_init         — Swift App.init ran
-              delegate_launch  — UIApplicationDelegate fired
-              root_appear      — first SwiftUI view mounted
+            Expected outcome: identical UI to v0.2.3 — launches to the
+            wizard, workspace picker works, stepping through to Finish
+            transitions to MainView with the stub terminal. Boot log
+            should show `framework_layer_glib` right after `dylib_ctor`.
+
+            If it crashes: last line in the boot log tells us which
+            phase died. Copy it via the yellow banner → sheet → Copy.
 
             Commit: ${{ github.sha }}
             Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -141,8 +193,4 @@ jobs:
           files: build/PocketClaude-unsigned.ipa
           make_latest: true
           draft: false
-          # Not marked prerelease: the /releases/latest/download/ redirect
-          # skips prereleases, so keeping it "true" leaves v0.2.1 as the
-          # apparent latest and defeats the whole point of shipping this
-          # to the user for diagnosis.
           prerelease: false

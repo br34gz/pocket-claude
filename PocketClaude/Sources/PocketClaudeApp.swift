@@ -37,6 +37,11 @@ struct PocketClaudeApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        // Layer marker: which UTM framework subset is embedded in this
+        // build. Read by us in the boot log to cross-reference which
+        // build the user is running without having to check the version
+        // string. See release-notes body for each build's framework list.
+        logBoot("framework_layer_glib")
         logBoot("app_init")
     }
 
