@@ -64,65 +64,85 @@ echo "$CLAUDE_VERSION" > /etc/pocket-claude-version
 useradd -m -s /bin/bash claude
 passwd -d claude || true
 
-# Autologin on ttyAMA0. v0.6.0's serial-getty@ttyAMA0.service override
-# never landed the --autologin arg (systemctl enable inside a
-# build-time chroot without a running systemd is unreliable for
-# template units, and even manual symlinks didn't cause the drop-in
-# to apply). Skip the getty templating layer entirely: mask
-# serial-getty@ttyAMA0 so it can't fight for the tty, then run our
-# own pocket-console.service that invokes /bin/login -f claude
-# on ttyAMA0 directly. login(1) -f skips password auth and still
-# sources /etc/profile + ~/.profile so all our env setup works.
-ln -sf /dev/null /etc/systemd/system/serial-getty@ttyAMA0.service
+# Autologin: bypass systemd's init entirely. Both v0.6.0's serial-getty
+# override and v0.6.1's pocket-console.service failed to preempt the
+# systemd-getty-generator's auto-spawn of serial-getty@ttyAMA0 (the
+# `pocket-claude login:` prompt from agetty kept winning the tty). Ship
+# our own /pocket-init as the kernel's PID 1: it handles the minimum
+# viable Linux userspace we need (proc/sys/dev mounts, loopback, DHCP,
+# 9p workspace mount, control-channel emit) then execs bash as the
+# claude user with a fresh login shell that sources ~/.profile.
+#
+# systemd is still installed for the odd shell utility we may want
+# later, but we never run it as init - the kernel append gets
+# init=/pocket-init.
 
-cat > /etc/systemd/system/pocket-console.service <<'EOF'
-[Unit]
-Description=PocketDev console (autologin as claude on ttyAMA0)
-After=systemd-user-sessions.service pocket-control.service
-Conflicts=serial-getty@ttyAMA0.service
-Before=getty.target
-RefuseManualStop=no
+cat > /pocket-init <<'INIT_EOF'
+#!/bin/bash
+# PocketDev VM init - runs as PID 1. Sets up minimum viable userspace
+# then hands the console tty to the dev user's shell.
+set +e  # tolerate individual step failures; boot into shell regardless
+umask 022
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TERM=vt100
 
-[Service]
-Type=idle
-Environment=TERM=vt100
-TTYPath=/dev/ttyAMA0
-TTYReset=yes
-TTYVHangup=yes
-StandardInput=tty
-StandardOutput=tty
-StandardError=tty
-ExecStart=/bin/login -f claude
-Restart=always
-RestartSec=2
+mount -t proc     proc     /proc     2>/dev/null
+mount -t sysfs    sysfs    /sys      2>/dev/null
+mount -t devtmpfs devtmpfs /dev      2>/dev/null
+mkdir -p /dev/pts /dev/shm /run
+mount -t devpts   devpts   /dev/pts  2>/dev/null
+mount -t tmpfs    tmpfs    /dev/shm  2>/dev/null
+mount -t tmpfs    tmpfs    /run      2>/dev/null
 
-[Install]
-WantedBy=multi-user.target
-EOF
-mkdir -p /etc/systemd/system/multi-user.target.wants
-ln -sf /etc/systemd/system/pocket-console.service \
-    /etc/systemd/system/multi-user.target.wants/pocket-console.service
+# Bring up loopback + DHCP on the virtio-net-device iface (name is
+# usually enp0s* under systemd but with our own init it comes up as
+# eth0). Try common names.
+ip link set lo up 2>/dev/null
+for iface in eth0 enp0s1 enp0s2 ens1 ens2; do
+    if ip link show "$iface" >/dev/null 2>&1; then
+        ip link set "$iface" up 2>/dev/null
+        dhclient -1 -v "$iface" >/tmp/dhclient.log 2>&1 && break
+    fi
+done
 
-# systemd-networkd for DHCP on virtio-net-device.
-mkdir -p /etc/systemd/network
-cat > /etc/systemd/network/10-vm.network <<'EOF'
-[Match]
-Name=en*
+# Static DNS for SLIRP (dhclient may or may not populate resolv.conf).
+echo "nameserver 10.0.2.3" > /etc/resolv.conf
 
-[Network]
-DHCP=ipv4
-EOF
-systemctl enable systemd-networkd
-# systemd-resolved not shipped by default in this Debian package set;
-# rely on the SLIRP-provided /etc/resolv.conf (systemd-networkd may
-# write a NetworkManager-style one but we set nameserver 10.0.2.3
-# explicitly).
-mkdir -p /etc
-cat > /etc/resolv.conf <<'EOF'
-nameserver 10.0.2.3
-EOF
+# 9p workspace (optional in CI, present on-device).
+mkdir -p /workspace
+mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000 workspace /workspace 2>/dev/null
 
-# 9p workspace mount
+# Control channel: emit BOOT_OK + variant + os on hvc0 if present.
+if [ -e /dev/hvc0 ]; then
+    (
+        echo "BOOT_OK"
+        [ -f /etc/pocket-claude-variant ] && echo "CLAUDE_VARIANT $(cat /etc/pocket-claude-variant)"
+        [ -f /etc/pocket-claude-os ]      && echo "GUEST_OS $(cat /etc/pocket-claude-os)"
+    ) > /dev/hvc0 2>/dev/null &
+fi
+
+# Hand the console over to the user's shell. login(1) -f claude:
+#   - skips password auth
+#   - preserves ~/.profile execution
+#   - creates a real login session with proper $HOME etc
+# setsid --ctty gives login a controlling tty so signals + job control
+# work correctly.
+cd /home/claude 2>/dev/null || cd /
+
+# On PID 1 we need to become the session leader on our ctty. The
+# kernel already has /dev/console wired to ttyAMA0 (because of the
+# console=ttyAMA0 kernel arg), so our stdin/stdout/stderr are that.
+exec setsid --ctty /bin/login -f claude </dev/console >/dev/console 2>&1
+INIT_EOF
+chmod +x /pocket-init
+
+# Skip systemd entirely - see kernel append below.
+
+# Static SLIRP resolv.conf (also written by /pocket-init at boot).
+echo "nameserver 10.0.2.3" > /etc/resolv.conf
+
+# 9p workspace fstab entry retained for reference / manual mount use,
+# but /pocket-init does the mount at boot before /etc/fstab is read.
 mkdir -p /workspace
 cat >> /etc/fstab <<'EOF'
 workspace /workspace 9p trans=virtio,version=9p2000.L,msize=512000,nofail 0 0
@@ -172,37 +192,9 @@ fi
 EOF
 chown -R claude:claude /home/claude
 
-# Control channel emitter as a systemd oneshot.
-cat > /etc/systemd/system/pocket-control.service <<'EOF'
-[Unit]
-Description=Pocket Claude control channel emitter
-After=network.target
-Wants=network.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/bin/pocket-control.sh
-
-[Install]
-WantedBy=multi-user.target
-EOF
-mkdir -p /usr/local/bin
-cat > /usr/local/bin/pocket-control.sh <<'EOF'
-#!/bin/sh
-if [ -e /dev/hvc0 ]; then
-    echo "BOOT_OK" > /dev/hvc0
-    if [ -f /etc/pocket-claude-variant ]; then
-        echo "CLAUDE_VARIANT $(cat /etc/pocket-claude-variant)" > /dev/hvc0
-    fi
-    if [ -f /etc/pocket-claude-os ]; then
-        echo "GUEST_OS $(cat /etc/pocket-claude-os)" > /dev/hvc0
-    fi
-fi
-exit 0
-EOF
-chmod +x /usr/local/bin/pocket-control.sh
-systemctl enable pocket-control.service
+# Control channel is now emitted directly by /pocket-init (see above),
+# so no separate service is needed. The systemd unit that used to live
+# here has been removed in v0.7.0 since we no longer run systemd.
 
 # --- Slim ----------------------------------------------------------
 apt-get clean

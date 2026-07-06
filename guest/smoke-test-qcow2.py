@@ -63,7 +63,7 @@ def start_qemu(qcow2: str, kernel: str, initrd: str) -> subprocess.Popen:
         "-no-user-config",
         "-kernel", kernel,
         "-initrd", initrd,
-        "-append", "console=ttyAMA0 root=/dev/vda rootfstype=ext4 rw quiet",
+        "-append", "console=ttyAMA0 root=/dev/vda rootfstype=ext4 rw quiet init=/pocket-init",
         "-drive", f"file={qcow2},if=virtio,format=qcow2",
         "-netdev", "user,id=net0",
         "-device", "virtio-net-device,netdev=net0",

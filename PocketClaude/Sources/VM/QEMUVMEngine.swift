@@ -146,7 +146,7 @@ final class QEMUVMEngine: VMEngine {
                     "-rtc", "base=utc,clock=host",
                     "-kernel", assets.kernel.path,
                     "-initrd", assets.initramfs.path,
-                    "-append", "console=ttyAMA0 root=/dev/vda rootfstype=ext4 rw quiet",
+                    "-append", "console=ttyAMA0 root=/dev/vda rootfstype=ext4 rw quiet init=/pocket-init",
                     "-drive", "file=\(assets.disk.path),if=virtio,format=qcow2,cache=writeback,discard=unmap",
                     // v0.3.2: switch from virtio-net-pci to virtio-net-device
                     // (MMIO). The MMIO transport on -M virt doesn't need a
