@@ -270,13 +270,42 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketDev v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            PocketDev v0.7.0 - full rename from Pocket Claude.
+            PocketDev v0.7.1 - Bun DFG JIT off, guest rename cleanup.
+
+            v0.7.0 on-device: Debian glibc guest booted cleanly,
+            autologin worked, `claude --version` printed 2.1.201.
+            BUT interactive `claude` hit a Bun / JavaScriptCore DFG
+            JIT assertion (isFlushed() at DFGSpeculativeJIT64.cpp:785)
+            under QEMU TCTI aarch64 emulation. Same fundamental
+            problem: npm-installed @anthropic-ai/claude-code still
+            ships as a Bun binary and Bun's JIT hits assertions under
+            interpreter emulation.
+
+            Also: the v0.7.0 IPA embedded a stale pre-rename guest
+            image (the iOS CI job pulled guest-latest before the
+            debian-glibc guest build had finished publishing), so
+            on-device the prompt still showed `claude@(none)` and
+            "Pocket Claude guest image" banner - stale artifacts, not
+            an incomplete rename in the code.
+
+            v0.7.1 changes:
+            - Export BUN_JSC_useDFGJIT=0 + BUN_JSC_useFTLJIT=0 in
+              /etc/profile.d/claude.sh. Drops Bun to LLInt +
+              Baseline JIT only. Slower per-call, but skips the
+              crashing DFG tier.
+            - /pocket-init runs `hostname $(cat /etc/hostname)` so the
+              shell prompt shows `dev@pocketdev` instead of
+              `dev@(none)`.
+            - Smoke test hard-fails on 'DFG ASSERTION' / 'isFlushed()'
+              markers so a Bun regression can't ship silently.
+            - Ensured iOS build pulls the fresh guest image (previous
+              race left a v0.7.0 IPA embedding a pre-rename guest).
 
             IMPORTANT: existing installs need to be uninstalled and
-            reinstalled. The bundle identifier changed from
-            com.br34gz.pocketclaude to com.br34gz.pocketdev, so iOS
-            treats this as a separate app. Long-press the old icon,
-            Remove App, Delete App, then sideload this IPA fresh.
+            reinstalled. Bundle identifier is com.br34gz.pocketdev
+            (was com.br34gz.pocketclaude in v0.6.x). Long-press the
+            old icon, Remove App, Delete App, then sideload this IPA
+            fresh.
 
             What's actually new in v0.7.0:
 

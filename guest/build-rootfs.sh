@@ -94,6 +94,12 @@ mount -t devpts   devpts   /dev/pts  2>/dev/null
 mount -t tmpfs    tmpfs    /dev/shm  2>/dev/null
 mount -t tmpfs    tmpfs    /run      2>/dev/null
 
+# Apply hostname from /etc/hostname (systemd would do this; we don't
+# run systemd, so we do it manually).
+if [ -f /etc/hostname ]; then
+    hostname "$(cat /etc/hostname)" 2>/dev/null
+fi
+
 # Bring up loopback + DHCP on the virtio-net-device iface (name is
 # usually enp0s* under systemd but with our own init it comes up as
 # eth0). Try common names.
@@ -153,6 +159,13 @@ EOF
 mkdir -p /etc/profile.d
 cat > /etc/profile.d/claude.sh <<'EOF'
 export USE_BUILTIN_RIPGREP=0
+# v0.7.1: Bun's DFG JIT tier hits an assertion failure under QEMU TCTI
+# aarch64 emulation (DFGSpeculativeJIT64.cpp:785, isFlushed() check).
+# JavaScriptCore honours BUN_JSC_ prefixes for its runtime options.
+# Disable DFG + FTL tiers - LLInt + Baseline still get to run, so we
+# lose some perf but keep functionality.
+export BUN_JSC_useDFGJIT=0
+export BUN_JSC_useFTLJIT=0
 EOF
 mkdir -p /home/dev/.claude
 cat > /home/dev/.claude/settings.json <<'EOF'
