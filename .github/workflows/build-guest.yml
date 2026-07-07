@@ -56,16 +56,20 @@ jobs:
           sudo apt-get install -y -q qemu-utils zstd e2fsprogs
           sudo mkdir -p rootfs
           sudo tar -xpf out/rootfs.tar -C rootfs
-          # v0.7.6: 2G -> 4G. Debian+node+npm claude-code eats ~1.5G
-          # baseline; leaving 500MB for the user's workspace + claude
-          # runtime state routinely tripped ENOSPC on device (which
-          # Bun's fs compat layer misreports as 'null bytes' errors).
-          # qcow2 stays thin-provisioned so the on-disk footprint is
-          # unchanged until data actually fills it.
-          truncate -s 4G disk.ext4
+          # v0.7.6: make a THIN 1.6 GB ext4 that fits just the rootfs
+          # data, then grow the qcow2's max virtual size to 4 GB after
+          # conversion. At boot /pocket-init runs `resize2fs /dev/vda`
+          # which grows the ext4 live to fill the 4 GB block device.
+          # Result: compressed IPA payload stays small, guest gets 4 GB
+          # of usable space at first login. (Formatting a full 4 GB
+          # ext4 then compressing wastes ~200 MB on inode metadata etc.)
+          truncate -s 1600M disk.ext4
           sudo mkfs.ext4 -q -L alpine -d rootfs disk.ext4
           qemu-img convert -f raw -O qcow2 disk.ext4 alpine-claude.qcow2
+          qemu-img resize alpine-claude.qcow2 4G
           zstd -19 -T0 alpine-claude.qcow2 -o alpine-claude.qcow2.zst
+          echo "== qcow2 info =="
+          qemu-img info alpine-claude.qcow2
           ls -lh alpine-claude.qcow2 alpine-claude.qcow2.zst out/
 
       - name: Read guest metadata
