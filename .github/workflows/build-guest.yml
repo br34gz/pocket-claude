@@ -56,7 +56,13 @@ jobs:
           sudo apt-get install -y -q qemu-utils zstd e2fsprogs
           sudo mkdir -p rootfs
           sudo tar -xpf out/rootfs.tar -C rootfs
-          truncate -s 2G disk.ext4
+          # v0.7.6: 2G -> 4G. Debian+node+npm claude-code eats ~1.5G
+          # baseline; leaving 500MB for the user's workspace + claude
+          # runtime state routinely tripped ENOSPC on device (which
+          # Bun's fs compat layer misreports as 'null bytes' errors).
+          # qcow2 stays thin-provisioned so the on-disk footprint is
+          # unchanged until data actually fills it.
+          truncate -s 4G disk.ext4
           sudo mkfs.ext4 -q -L alpine -d rootfs disk.ext4
           qemu-img convert -f raw -O qcow2 disk.ext4 alpine-claude.qcow2
           zstd -19 -T0 alpine-claude.qcow2 -o alpine-claude.qcow2.zst

@@ -26,7 +26,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y --no-install-recommends \
     systemd systemd-sysv udev dbus \
-    linux-image-arm64 \
+    linux-image-arm64 e2fsprogs \
     ifupdown isc-dhcp-client ca-certificates \
     bash curl wget git openssh-client sudo \
     less procps net-tools iproute2 iputils-ping \
@@ -94,6 +94,10 @@ mkdir -p /home/dev/.claude/workflows \
          /home/dev/.claude/logs \
          /home/dev/.claude/cache
 mkdir -p /home/dev/tmp
+# v0.7.6: give dev an npm prefix under $HOME so `npm install -g` works
+# as non-root without touching /usr/local (which needs sudo). Combined
+# with the PATH addition in /home/dev/.profile below.
+mkdir -p /home/dev/.npm-global
 
 # Autologin: bypass systemd's init entirely. Both v0.6.0's serial-getty
 # override and v0.6.1's pocket-console.service failed to preempt the
@@ -130,11 +134,28 @@ mount -t tmpfs    tmpfs    /run      2>/dev/null
 # there. Rootfs may ship it wrong; fix at init time.
 chmod 1777 /tmp 2>/dev/null
 
+# v0.7.6: resize the root filesystem to fill the underlying block
+# device. The qcow2 ships as 4G but the mkfs.ext4 was run against
+# whatever raw file the CI created; resize2fs on a mounted rw ext4
+# grows it live to the full disk. If this fails (kernel too old,
+# device not resizable), we just don't get the extra space.
+resize2fs /dev/vda 2>/dev/null || true
+
 # Apply hostname from /etc/hostname (systemd would do this; we don't
 # run systemd, so we do it manually).
 if [ -f /etc/hostname ]; then
     hostname "$(cat /etc/hostname)" 2>/dev/null
 fi
+
+# v0.7.6: disk-free tracking. Print to /dev/console so the smoke test
+# picks it up and the user sees it in the terminal, and mirror to
+# /etc/pocketdev-boot.log for post-mortem.
+_pd_disk_free() {
+    df -m / 2>/dev/null | awk 'NR==2{print $4}'
+}
+DF_INIT=$(_pd_disk_free)
+echo "[pocket-init] disk_free_mb=$DF_INIT" > /dev/console
+echo "$(date -u +%FT%TZ) init disk_free_mb=$DF_INIT" > /etc/pocketdev-boot.log
 
 # Bring up loopback + DHCP on the virtio-net-device iface (name is
 # usually enp0s* under systemd but with our own init it comes up as
@@ -186,10 +207,21 @@ fi
 # work correctly.
 cd /home/dev 2>/dev/null || cd /
 
-# On PID 1 we need to become the session leader on our ctty. The
-# kernel already has /dev/console wired to ttyAMA0 (because of the
-# console=ttyAMA0 kernel arg), so our stdin/stdout/stderr are that.
-exec setsid --ctty /bin/login -f dev </dev/console >/dev/console 2>&1
+# v0.7.6: DON'T exec login. If we did, PID 1 would be replaced by
+# login; when the user typed `exit` or Ctrl+D, PID 1 would die and
+# the kernel would panic ("Attempted to kill init!"). Instead,
+# supervise: fork login in a loop so exit becomes "reset to fresh
+# shell" rather than "system crash". Trap signals so nothing kills
+# us silently.
+trap '' HUP INT TERM
+
+while true; do
+    setsid -c /bin/login -f dev </dev/console >/dev/console 2>&1
+    DF=$(_pd_disk_free)
+    echo "[pocket-init] login exited, disk_free_mb=$DF, respawning in 2s..." > /dev/console
+    echo "$(date -u +%FT%TZ) respawn disk_free_mb=$DF" >> /etc/pocketdev-boot.log
+    sleep 2
+done
 INIT_EOF
 chmod +x /pocket-init
 
@@ -225,6 +257,11 @@ export NODE_OPTIONS="--max-old-space-size=512"
 # private tree it "owns" MIGHT convince it into a different code path.
 export BUN_INSTALL="$HOME/.bun"
 export HOME="$HOME"
+
+# v0.7.6: npm user prefix so `npm install -g` works as non-root
+# without touching /usr/local (which needs sudo).
+export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+export PATH="$HOME/.npm-global/bin:$PATH"
 EOF
 mkdir -p /home/dev/.claude
 cat > /home/dev/.claude/settings.json <<'EOF'
@@ -269,14 +306,28 @@ chown -R dev:dev /home/dev
 # here has been removed in v0.7.0 since we no longer run systemd.
 
 # --- Slim ----------------------------------------------------------
+# v0.7.6: more aggressive reclaim - user was hitting ENOSPC on device
+# even with just claude-code installed. Target: pre-first-launch
+# rootfs under ~900 MB.
 apt-get clean
+apt-get autoremove -y --purge 2>/dev/null || true
 rm -rf /var/lib/apt/lists/*
 rm -rf /var/cache/apt/*
+rm -rf /var/cache/debconf/*.dat-old
 rm -rf /usr/share/man/*
 rm -rf /usr/share/doc/*
 rm -rf /usr/share/info/*
+rm -rf /usr/share/gcc/python
+rm -rf /var/log/journal/*
+rm -rf /var/log/apt/*
+rm -rf /root/.npm
+rm -rf /root/.cache
+rm -rf /tmp/*
 find /usr/share/locale -mindepth 1 -maxdepth 1 -type d \
     ! -name 'en*' -exec rm -rf {} + 2>/dev/null || true
+find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null || true
+echo "== space usage after slim =="
+du -sh /usr /var /opt /home 2>/dev/null || true
 
 # --- Outputs -------------------------------------------------------
 # Kernel + initramfs land in /boot after linux-image-arm64 install.
