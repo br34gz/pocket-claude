@@ -30,6 +30,7 @@ apt-get install -y --no-install-recommends \
     ifupdown isc-dhcp-client ca-certificates \
     bash curl wget git openssh-client sudo \
     less procps net-tools iproute2 iputils-ping \
+    strace gdb \
     nodejs npm ripgrep \
     locales vim-tiny tzdata rsync
 
@@ -60,6 +61,17 @@ echo pocketdev > /etc/hostname
 echo debian-12 > /etc/pocketdev-os
 echo "$CLAUDE_VARIANT" > /etc/pocketdev-variant
 echo "$CLAUDE_VERSION" > /etc/pocketdev-version
+
+# v0.7.5: /etc/hosts entry for the hostname so sudo can resolve it.
+# On device: `sudo -i` fails with "unable to resolve host pocketdev"
+# because we bypass systemd + nss-systemd. Explicit entry fixes it.
+cat > /etc/hosts <<'EOF'
+127.0.0.1  localhost
+127.0.1.1  pocketdev
+::1        localhost ip6-localhost ip6-loopback
+ff02::1    ip6-allnodes
+ff02::2    ip6-allrouters
+EOF
 
 # dev user + passwordless sudo (user needs to install extra tooling
 # at runtime; sudo -i from the shell becomes root without a password).
@@ -204,11 +216,15 @@ export BUN_JSC_useJIT=0                # Kill ALL JIT tiers -> LLInt only.
 export BUN_JSC_useConcurrentGC=0       # Kills the concurrent-marking race.
 export NODE_OPTIONS="--max-old-space-size=512"
 
-# v0.7.4: point TMPDIR at a definitely-writable spot inside $HOME so
-# any tool that writes to $TMPDIR isn't tripped up by /tmp weirdness
-# on the 9p mount or elsewhere.
-export TMPDIR="$HOME/tmp"
-mkdir -p "$TMPDIR" 2>/dev/null
+# v0.7.5: TMPDIR=$HOME/tmp shipped in v0.7.4 made things WORSE - claude
+# still couldn't mkdir /home/dev/tmp/claude-<PID> under TCTI. Reverted;
+# let Bun use its default /tmp (chmod 1777 by /pocket-init).
+
+# v0.7.5: Bun-specific belt+braces env vars. If Bun's fs path handling
+# is TCTI-emulation broken for any first-time mkdir, giving it a
+# private tree it "owns" MIGHT convince it into a different code path.
+export BUN_INSTALL="$HOME/.bun"
+export HOME="$HOME"
 EOF
 mkdir -p /home/dev/.claude
 cat > /home/dev/.claude/settings.json <<'EOF'

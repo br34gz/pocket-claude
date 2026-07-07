@@ -115,16 +115,30 @@ final class PocketDevEnvironment: ObservableObject {
         if consoleTail.count > consoleTailLimit {
             consoleTail.removeFirst(consoleTail.count - consoleTailLimit)
         }
+        // v0.7.5 latch: once we've moved past the boot progression
+        // (either .ready or a terminal failure state), scanning the
+        // rolling tail buffer for markers would just re-fire on every
+        // subsequent keystroke - the buffer keeps a window of past
+        // output. Only advance the scanner while we're actively
+        // progressing through the boot stages.
+        guard bootStage.isProgressing || bootStage == .idle else { return }
         var next = bootStage
         // Failure detection runs first: if claude bailed, no forward
         // progress makes sense.
-        if !next.isFailure,
-           consoleTail.contains("claude exited unexpectedly")
-            || consoleTail.contains("marks not empty")
-            || consoleTail.contains("DFG ASSERTION")
-            || consoleTail.contains("ASSERTION FAILED")
-        {
+        let failMarkers: [String] = [
+            "claude exited unexpectedly",
+            "marks not empty",
+            "DFG ASSERTION",
+            "ASSERTION FAILED",
+            "Claude Code could not start",
+        ]
+        for marker in failMarkers where consoleTail.contains(marker) {
             next = .claudeFailed
+            // Boot log entry for post-mortem forensics without a
+            // screenshot - the specific marker string that triggered.
+            let logLine = "claude_fail_marker=\(marker.prefix(60))"
+            logLine.withCString { pocket_boot_log($0) }
+            break
         }
         // Stage 2: any console byte means the kernel is emitting.
         if next < .booting { next = .booting }

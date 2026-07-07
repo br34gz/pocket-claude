@@ -270,7 +270,56 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
           name: "PocketDev v${{ steps.version.outputs.version }} (build ${{ github.run_number }})"
           body: |
-            PocketDev v0.7.4 - workspace 9p in CI smoke + rootfs polish.
+            PocketDev v0.7.5 - hosts fix, TMPDIR revert, failure-card latch, strace/gdb.
+
+            v0.7.4 shipped workspace 9p in CI + pre-created .claude
+            dirs; that fixed the /workspace/.claude/workflows crash.
+            But the null-bytes error moved to /home/dev/tmp/claude-<PID>
+            (a path v0.7.4 CREATED by exporting TMPDIR=\$HOME/tmp).
+            Every path Bun tries to mkdir under TCTI emulation fails
+            with 'null bytes', regardless of filesystem or existence.
+
+            v0.7.5 targeted fixes:
+
+            1. /etc/hosts gains '127.0.1.1 pocketdev' so sudo can
+               resolve the hostname without systemd-nss. Fixes v0.7.4's
+               'sudo: unable to resolve host pocketdev' error.
+
+            2. TMPDIR=\$HOME/tmp reverted. That change in v0.7.4 moved
+               the null-bytes crash to a new path; Bun's default /tmp
+               (already chmod 1777 by /pocket-init) is no worse.
+
+            3. Bun-private env vars as belt+braces:
+                 BUN_INSTALL=\$HOME/.bun
+                 HOME=\$HOME
+               If Bun's TCTI-emulation fs bug is coming from its default
+               path assumptions, giving it a private tree it "owns"
+               might route it into a different code path.
+
+            4. strace + gdb added to the apt manifest so we can attach
+               to claude when it crashes and get the actual syscall +
+               path (which might have real nul bytes in it - the error
+               message doesn't tell us).
+
+            5. UI: PocketDevEnvironment.observeConsoleOutput now
+               LATCHES once bootStage exits the progressing states.
+               v0.7.4 kept re-firing .claudeFailed on every keystroke
+               because the console tail buffer retained the marker
+               string and every new byte re-ran the scanner. Only
+               advance the stage while we're actively booting.
+
+            6. Boot-log entry claude_fail_marker=<string> when we
+               transition to .claudeFailed, so future forensics can
+               see the specific marker without a device screenshot.
+
+            v0.7.3-4 fixes still active: BUN_JSC_useJIT=0,
+            BUN_JSC_useConcurrentGC=0, workspace .claude/ pre-created
+            at build + boot, dev NOPASSWD sudoers, wget/curl/sudo
+            installed, /tmp chmod 1777.
+
+            IF v0.7.5 STILL crashes at a new mkdir path, v0.8.0 pivots
+            to a Python-based `pd` CLI wrapping Anthropic's Messages
+            API directly (Bun-free).
 
             v0.7.3 device report: no more GC crash (BUN_JSC_ knobs
             landed cleanly), but claude hit a fresh Bun fs error under
